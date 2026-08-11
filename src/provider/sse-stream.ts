@@ -88,7 +88,7 @@ export class PostmanStreamReader {
       userType: data.userType ?? "",
       usageState: data.usageState ?? "",
     };
-    if (data.usageState === "EXCEEDED" || data.usageState === "UNAVAILABLE") {
+    if (data.usageState === "EXCEEDED" || data.usageState === "UNAVAILABLE" || data.usageState === "BLOCKED") {
       this._quotaExceeded = true;
     }
     return [];
