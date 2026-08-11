@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.env
+
+# Database
+data/postman2api.db
+data/postman2api.db-journal
+
+# Python Virtual Env for Auth Scripts
+scripts/auth/.venv/
+scripts/auth/__pycache__/
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
