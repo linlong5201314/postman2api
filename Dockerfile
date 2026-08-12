@@ -4,7 +4,7 @@ WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/bun.lock ./
 # Railway may provide NODE_ENV=production during the image build. The
 # dashboard typecheck and Vite build require its devDependencies.
-RUN bun install --frozen-lockfile --production=false
+RUN NODE_ENV=development bun install --frozen-lockfile
 COPY dashboard/ ./
 RUN bun run typecheck && bun run build
 
