@@ -13,6 +13,9 @@ import { POSTMAN_MODEL_MAP, POSTMAN_MODELS, resolvePostmanModel } from "./models
 import { PostmanStreamReader, type PostmanDelta } from "./sse-stream";
 import type { PostmanTokens } from "./transcript";
 import { extractTextFromMessage, isAnthropicToolResult } from "./transcript";
+import { getAccountProxyUrl } from "../proxy/proxies";
+import { decodeAccountTokens } from "../auth/tokens";
+import { redactSensitive } from "../utils/redact";
 
 const DEFAULT_APP_VERSION = "12.15.4-260616-1202";
 const CHAT_ENDPOINT = "/_gw/chat";
@@ -51,24 +54,7 @@ export class PostmanProvider extends BaseProvider {
   }
 
   private getTokens(account: Account): PostmanTokens | null {
-    try {
-      const tokens =
-        typeof account.tokens === "string"
-          ? JSON.parse(account.tokens)
-          : account.tokens;
-      if (!tokens || typeof tokens !== "object") return null;
-      const { postman_sid, user_id, workspace_id, workspace_subdomain } = tokens;
-      if (!postman_sid || !user_id || !workspace_id || !workspace_subdomain) return null;
-      return {
-        postman_sid: String(postman_sid),
-        user_id: String(user_id),
-        workspace_id: String(workspace_id),
-        workspace_subdomain: String(workspace_subdomain),
-        user_name: tokens.user_name ? String(tokens.user_name) : undefined,
-      };
-    } catch {
-      return null;
-    }
+    return decodeAccountTokens(account.tokens);
   }
 
   private buildHeaders(tokens: PostmanTokens): Record<string, string> {
@@ -283,10 +269,11 @@ export class PostmanProvider extends BaseProvider {
     const body = this.buildRequestBody(request, tokens, postmanModel, String(account.id));
 
     try {
+      const proxy = await getAccountProxyUrl(account) || undefined;
       const response = await this.fetchWithTimeout(
         `https://${tokens.workspace_subdomain}.postman.co${CHAT_ENDPOINT}`,
         { method: "POST", headers: this.buildHeaders(tokens), body: JSON.stringify(body) },
-        REQUEST_TIMEOUT_MS, TTFB_TIMEOUT_MS, request.signal,
+        REQUEST_TIMEOUT_MS, TTFB_TIMEOUT_MS, request.signal, proxy,
       );
 
       const statusResult = this.checkResponseStatus(response);
@@ -347,7 +334,7 @@ export class PostmanProvider extends BaseProvider {
 
       return { success: true, response: completionResponse, promptTokens: completionResponse.usage.prompt_tokens, completionTokens: completionResponse.usage.completion_tokens, tokensUsed: completionResponse.usage.total_tokens, creditSource: "fixed", creditsUsed: 0 };
     } catch (error) {
-      return { success: false, error: `Postman request failed: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, error: `Postman request failed: ${redactSensitive(error)}` };
     }
   }
 
@@ -361,10 +348,11 @@ export class PostmanProvider extends BaseProvider {
     const body = this.buildRequestBody(request, tokens, postmanModel, String(account.id));
 
     try {
+      const proxy = await getAccountProxyUrl(account) || undefined;
       const response = await this.fetchWithTimeout(
         `https://${tokens.workspace_subdomain}.postman.co${CHAT_ENDPOINT}`,
         { method: "POST", headers: this.buildHeaders(tokens), body: JSON.stringify(body) },
-        REQUEST_TIMEOUT_MS, TTFB_TIMEOUT_MS, request.signal,
+        REQUEST_TIMEOUT_MS, TTFB_TIMEOUT_MS, request.signal, proxy,
       );
 
       const statusResult = this.checkResponseStatus(response);
@@ -422,7 +410,7 @@ export class PostmanProvider extends BaseProvider {
 
       return { success: true, stream };
     } catch (error) {
-      return { success: false, error: `Postman stream failed: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, error: `Postman stream failed: ${redactSensitive(error)}` };
     }
   }
 
@@ -453,14 +441,13 @@ export class PostmanProvider extends BaseProvider {
         path: `/teams/${tokens.workspace_id}/operations/ai_millicredits/usage`,
       });
 
-      const response = await fetch(
-        `https://${tokens.workspace_subdomain}.postman.co/_api/ws/proxy`,
-        {
+      const proxy = await getAccountProxyUrl(account) || undefined;
+      const response = await this.fetchWithTimeout(
+        `https://${tokens.workspace_subdomain}.postman.co/_api/ws/proxy`, {
           method: "POST",
           headers: { ...this.buildHeaders(tokens), "Content-Type": "application/json" },
           body,
-          signal: AbortSignal.timeout(15000),
-        },
+        }, 15_000, 15_000, undefined, proxy,
       );
 
       if (!response.ok) return { success: false, error: `Quota API error: ${response.status}` };
@@ -476,7 +463,7 @@ export class PostmanProvider extends BaseProvider {
 
       return { success: true, quota: { limit, remaining, used: usage } };
     } catch (error) {
-      return { success: false, error: `Quota fetch failed: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, error: `Quota fetch failed: ${redactSensitive(error)}` };
     }
   }
 
@@ -486,7 +473,7 @@ export class PostmanProvider extends BaseProvider {
 
     const quotaResult = await this.fetchQuota(account);
     if (!quotaResult.success || !quotaResult.quota) {
-      return { kind: "healthy", success: true, quota: { limit: 800000, remaining: 800000, used: 0, source: "postman.dynamic" } };
+      return { kind: "transient_error", success: false, retryable: true, error: quotaResult.error || "Quota fetch failed" };
     }
 
     const q = quotaResult.quota;

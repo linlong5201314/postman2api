@@ -51,6 +51,23 @@ export function decrypt(ciphertext: string): string {
   return legacyXorDecrypt(new Uint8Array(data));
 }
 
+export function encryptJson(value: unknown): string {
+  return `enc:v1:${encrypt(JSON.stringify(value))}`;
+}
+
+export function decryptJson<T = unknown>(ciphertext: string): T {
+  const trimmed = ciphertext.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return JSON.parse(trimmed) as T;
+  }
+  const payload = ciphertext.startsWith("enc:v1:") ? ciphertext.slice("enc:v1:".length) : ciphertext;
+  return JSON.parse(decrypt(payload)) as T;
+}
+
+export function isEncryptedValue(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.startsWith("enc:v1:");
+}
+
 export function isDefaultEncryptionKey(): boolean {
   return config.encryptionKey === DEFAULT_ENCRYPTION_KEY;
 }

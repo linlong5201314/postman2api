@@ -2,9 +2,9 @@ import { db } from "../db/index";
 import { accounts } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { PostmanProvider } from "../provider/postman";
+import { config } from "../config";
 
 const provider = new PostmanProvider();
-const WARMUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 let warmupTimer: ReturnType<typeof setInterval> | null = null;
 
 export async function warmupAccount(accountId: number): Promise<{ success: boolean; error?: string }> {
@@ -50,8 +50,8 @@ export function startWarmupScheduler(): void {
     warmupAllAccounts().catch((err) => {
       console.error("[warmup] Scheduler error:", err);
     });
-  }, WARMUP_INTERVAL_MS);
-  console.log(`[warmup] Scheduler started (interval: ${WARMUP_INTERVAL_MS / 1000}s)`);
+  }, config.warmupIntervalMs);
+  console.log(`[warmup] Scheduler started (interval: ${config.warmupIntervalMs / 1000}s)`);
 }
 
 export function stopWarmupScheduler(): void {

@@ -3,6 +3,7 @@ import { accounts } from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import type { Account } from "../db/schema";
 import { broadcast } from "../ws/index";
+import { encodeAccountTokens } from "../auth/tokens";
 
 interface PoolState {
   lastIndex: number;
@@ -76,6 +77,10 @@ class AccountPool {
     else this.inFlightByAccountId.delete(accountId);
   }
 
+  getRequestCount(accountId: number): number {
+    return this.getInFlightCount(accountId);
+  }
+
   async markUsed(accountId: number): Promise<void> {
     await db.update(accounts).set({ lastUsedAt: new Date(), updatedAt: new Date() }).where(eq(accounts.id, accountId));
   }
@@ -96,7 +101,7 @@ class AccountPool {
   }
 
   async updateTokens(accountId: number, tokens: unknown): Promise<void> {
-    await db.update(accounts).set({ tokens: JSON.stringify(tokens), updatedAt: new Date() }).where(eq(accounts.id, accountId));
+    await db.update(accounts).set({ tokens: encodeAccountTokens(tokens as any), updatedAt: new Date() }).where(eq(accounts.id, accountId));
   }
 
   async setEnabled(accountId: number, enabled: boolean): Promise<Account | null> {

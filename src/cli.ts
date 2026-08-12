@@ -8,16 +8,13 @@
  *   bun src/cli.ts accounts                    List accounts
  *   bun src/cli.ts quota                       Check account quotas
  *   bun src/cli.ts status                      Show config overview
- *   bun src/cli.ts set-admin-key <key>         Set admin password
  */
 
 import { db } from "./db/index";
-import { accounts, settings } from "./db/schema";
-import { eq } from "drizzle-orm";
+import { accounts } from "./db/schema";
 import { config } from "./config";
 import { loginPostmanAccount } from "./auth/bridge";
 import { warmupAccount } from "./auth/warmup";
-import { encrypt } from "./utils/crypto";
 
 const C: Record<string, string> = {
   reset: "\x1b[0m", green: "\x1b[32m", yellow: "\x1b[33m",
@@ -37,7 +34,6 @@ Usage:
   bun src/cli.ts accounts                    List accounts
   bun src/cli.ts quota                       Check account quotas
   bun src/cli.ts status                      Show config overview
-  bun src/cli.ts set-admin-key <key>         Set admin password
   bun src/cli.ts migrate                     Run database migration
 `);
 }
@@ -101,8 +97,8 @@ async function cmdStatus(): Promise<void> {
   console.log(c("\n--- postman2api Status ---", "cyan"));
   console.log(`Database      : ${c(config.databasePath, "blue")}`);
   console.log(`Port          : ${c(String(config.port), "blue")}`);
-  console.log(`Admin Key     : ${"Set"}`);
-  console.log(`API Key       : ${config.apiKey}`);
+  console.log(`Admin Key     : ${maskSecret(config.adminKey)}`);
+  console.log(`API Key       : ${maskSecret(config.apiKey)}`);
   console.log(`Browser       : ${c(config.browserEngine, "blue")}`);
   console.log(`Python Path   : ${c(config.pythonPath, "blue")}`);
 
@@ -111,13 +107,10 @@ async function cmdStatus(): Promise<void> {
   console.log(`Accounts      : ${allAccounts.length} total, ${c(String(active.length), "green")} active`);
 }
 
-async function cmdSetAdminKey(args: string[]): Promise<void> {
-  if (!args[0]) {
-    console.log(c("Usage: bun src/cli.ts set-admin-key <key>", "red"));
-    return;
-  }
-  await db.update(settings).set({ value: args[0], updatedAt: new Date() }).where(eq(settings.key, "admin_key"));
-  console.log(c("✔ Admin password updated", "green"));
+export function maskSecret(value: string): string {
+  if (!value) return "Not set";
+  if (value.length <= 8) return "********";
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
 async function main() {
@@ -134,7 +127,6 @@ async function main() {
     case "accounts": await cmdAccounts(); break;
     case "quota": await cmdQuota(); break;
     case "status": await cmdStatus(); break;
-    case "set-admin-key": await cmdSetAdminKey(rest); break;
     case "migrate": await import("./db/migrate"); break;
     case "help":
     case "-h":
@@ -143,7 +135,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(c(`Error: ${err}`, "red"));
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(c(`Error: ${err}`, "red"));
+    process.exit(1);
+  });
+}

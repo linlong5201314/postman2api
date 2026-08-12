@@ -1,25 +1,42 @@
-FROM oven/bun:1 AS base
-WORKDIR /app
+FROM oven/bun:1.3.8-slim AS dashboard-build
 
-# Install Python for Camoufox browser automation
-RUN apt-get update && apt-get install -y python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
-
-# Copy package files
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
-
-# Copy source
-COPY . .
-
-# Setup Python venv
-RUN python3 -m venv scripts/auth/.venv && \
-    scripts/auth/.venv/bin/pip install -r scripts/auth/requirements.txt
-
-# Build dashboard
 WORKDIR /app/dashboard
-RUN bun install && bun run build
+COPY dashboard/package.json dashboard/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY dashboard/ ./
+RUN bun run typecheck && bun run build
+
+FROM oven/bun:1.3.8-slim AS runtime
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=1930 \
+    DATABASE_PATH=/app/data/postman2api.db \
+    PYTHON_PATH=/app/scripts/auth/.venv/bin/python \
+    ENABLE_BROWSER_LOGIN=false
+
 WORKDIR /app
 
-# Run migration on startup then serve
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY --from=dashboard-build /app/dashboard/dist ./dashboard/dist
+
+RUN python3 -m venv scripts/auth/.venv \
+    && scripts/auth/.venv/bin/pip install --no-cache-dir -r scripts/auth/requirements.txt \
+    && mkdir -p /app/data \
+    && chown -R bun:bun /app
+
+USER bun
+
 EXPOSE 1930
-CMD ["sh", "-c", "bun src/db/migrate.ts && bun src/index.ts"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:'+process.env.PORT+'/health');if(!r.ok)process.exit(1)"]
+
+CMD ["bun", "src/index.ts"]

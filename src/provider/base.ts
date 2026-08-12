@@ -23,7 +23,19 @@ export interface ChatCompletionRequest {
   thinking?: { type: string; budget_tokens?: number; display?: string; effort?: string; summary?: string };
   signal?: AbortSignal;
   _originalModel?: string;
+  proxy?: ProviderProxyOption;
 }
+
+export type ProviderProxyOption = string | URL | {
+  url: string | URL;
+  headers?: Record<string, string> | Headers | [string, string][];
+};
+
+export type ProviderFetchInit = RequestInit & {
+  proxy?: ProviderProxyOption;
+};
+
+export type ProviderFetch = (url: string | URL | Request, init?: ProviderFetchInit) => Promise<Response>;
 
 export interface ChatCompletionChoice {
   index: number;
@@ -105,6 +117,8 @@ export abstract class BaseProvider {
   abstract supportedModels: ModelInfo[];
   nativeFormat: "openai" | "anthropic" = "openai";
 
+  constructor(protected readonly fetchImpl: ProviderFetch = globalThis.fetch as ProviderFetch) {}
+
   getModelInfo(model: string): ModelInfo | undefined {
     const normalized = model.toLowerCase();
     return this.supportedModels.find((item) => item.id.toLowerCase() === normalized);
@@ -154,14 +168,15 @@ export abstract class BaseProvider {
   abstract chatCompletionStream(account: Account, request: ChatCompletionRequest): Promise<ProviderResult>;
   abstract refreshToken(account: Account): Promise<{ success: boolean; tokens?: string; error?: string }>;
   abstract validateAccount(account: Account): Promise<boolean>;
-  abstract fetchQuota(account: Account): Promise<{ success: boolean; quota?: { limit: number; remaining: number; used: number; resetAt?: Date | string | null }; error?: string }>;
+  abstract fetchQuota(account: Account, proxy?: ProviderProxyOption): Promise<{ success: boolean; quota?: { limit: number; remaining: number; used: number; resetAt?: Date | string | null }; error?: string }>;
 
   protected async fetchWithTimeout(
     url: string,
     init: RequestInit,
-    timeoutMs = config.providerRequestTimeoutMs,
+    timeoutMs = config.requestTimeoutMs,
     ttfbTimeoutMs?: number,
     clientSignal?: AbortSignal,
+    proxy?: ProviderProxyOption,
   ): Promise<Response> {
     const controller = new AbortController();
     const totalTimer = setTimeout(() => controller.abort(new Error(`Upstream timeout after ${timeoutMs}ms`)), timeoutMs);
@@ -178,7 +193,9 @@ export abstract class BaseProvider {
     }
 
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal } as any);
+      const fetchInit: ProviderFetchInit = { ...init, signal: controller.signal };
+      if (proxy) fetchInit.proxy = proxy;
+      const response = await this.fetchImpl(url, fetchInit);
       if (ttfbTimer) clearTimeout(ttfbTimer);
       return response;
     } finally {

@@ -6,6 +6,7 @@ import {
   openAIToAnthropic,
   type AnthropicMessagesRequest,
 } from "../proxy/transforms/anthropic";
+import { redactSensitive } from "../utils/redact";
 
 export const chatRouter = new Hono();
 
@@ -86,8 +87,8 @@ chatRouter.post("/v1/messages", async (c) => {
     result.model = originalModel;
     return c.json(result);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return c.json({ type: "error", error: { type: "api_error", message: errorMessage } }, 500);
+    console.error("[chat] Anthropic request failed:", redactSensitive(error));
+    return c.json({ type: "error", error: { type: "api_error", message: "Internal request failure" } }, 500);
   }
 });
 

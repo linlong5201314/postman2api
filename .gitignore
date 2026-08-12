@@ -1,14 +1,26 @@
 node_modules/
+dashboard/node_modules/
 dist/
+dashboard/dist/
 .env
+.env.*
+!.env.example
 
 # Database
 data/postman2api.db
 data/postman2api.db-journal
+data/postman2api.db-shm
+data/postman2api.db-wal
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 
 # Python Virtual Env for Auth Scripts
 scripts/auth/.venv/
 scripts/auth/__pycache__/
+scripts/auth/**/__pycache__/
+*.py[cod]
 
 # Logs
 *.log
@@ -16,3 +28,13 @@ scripts/auth/__pycache__/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Tooling and local runtime state
+.omx/
+.omo/
+coverage/
+*.tsbuildinfo
+
+# Private proxy bootstrap files (may contain credentials)
+data/proxies*.txt
+railway.variables.local

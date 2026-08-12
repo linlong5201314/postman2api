@@ -1,79 +1,67 @@
-> ⚠️ **EDUCATIONAL PURPOSE ONLY** — This project is provided **as-is** for research and educational purposes. The author is **not responsible** for any misuse, ToS violations, or consequences resulting from the use of this software. Use at your own risk.
-
 # postman2api
 
-Standalone Postman AI proxy — converts Postman's agent chat API into an OpenAI + Anthropic-compatible endpoint with multi-account pooling, round-robin load balancing, and Camoufox browser-automated login.
+Standalone Bun service that exposes Postman's agent chat API through OpenAI- and Anthropic-compatible endpoints. It provides an authenticated admin dashboard, multi-account pooling, encrypted account tokens, and per-account HTTP/HTTPS upstream proxies.
 
-## Quick Start
+> Educational and research use only. Check the upstream service terms and applicable law before using it. No code can guarantee unlimited quota, account lifetime, or resistance to provider-side controls.
+
+## Local setup
+
+Requirements: Bun 1.3.8 or newer. Python/Playwright is optional and only needed for local browser login.
 
 ```bash
 bun install
-cd dashboard && bun install && bun run build && cd ..
+cd dashboard && bun install && cd ..
 cp .env.example .env
-bun src/db/migrate.ts
+bun run build
 bun start
 ```
 
-- **Dashboard**: http://localhost:1930
-- **API key**: set via `API_KEY` in `.env`
-- **OpenAI**: `http://localhost:1930/v1/chat/completions`
-- **Anthropic**: `http://localhost:1930/v1/messages`
+The server runs migrations automatically. Open `http://localhost:1930`, then sign in with `ADMIN_KEY` from `.env`. Production startup rejects missing or weak secrets.
 
-## Login
+For reliable account setup, use the Dashboard's manual token import. Browser login can be disabled with `ENABLE_BROWSER_LOGIN=false` and is disabled in the Railway image.
 
-```bash
-python3 -m venv scripts/auth/.venv
-source scripts/auth/.venv/bin/activate
-pip install -r scripts/auth/requirements.txt
+## Proxies
 
-python3 scripts/auth/postman_login.py --email you@gmail.com --password pass
+Open **Proxies** in the Dashboard to batch import, test, enable/disable, delete, and assign proxies to accounts. One proxy per line is accepted:
+
+```text
+http://user:password@host.example:8080
+host.example:8081
+host.example:8082:user:password
+user:password@host.example:8083
 ```
 
-Or via dashboard: **Logs** panel → enter credentials → click **Login**.
+Only HTTP and HTTPS upstream proxies are supported. SOCKS4/SOCKS5 lines are rejected explicitly. URLs and credentials are encrypted in SQLite; management responses show only masked values. For Railway, use the private multiline `PROXY_BOOTSTRAP` variable to import on startup.
 
-## API Usage
+## API usage
 
 ```bash
-# OpenAI
+# OpenAI-compatible
 curl http://localhost:1930/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}],"stream":true}'
 
-# Anthropic
+# Anthropic-compatible
 curl http://localhost:1930/v1/messages \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-## Models
+Available models are returned by authenticated `GET /v1/models`.
 
-`claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`, `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.2`, `auto`
+## Railway
 
-Antropik `/v1/messages` accepts official Claude model IDs and normalizes them automatically.
+Railway deployment uses the root `Dockerfile` and must remain a single replica while SQLite is used. Mount a Volume at `/app/data`, set `DATABASE_PATH=/app/data/postman2api.db`, and set `REQUIRE_PERSISTENT_STORAGE=true`.
 
-## Features
+See [docs/RAILWAY.md](docs/RAILWAY.md) for variables, proxy bootstrap, health checks, and deployment steps. Redis is not required.
 
-- OpenAI `/v1/chat/completions` + Anthropic `/v1/messages` protocol
-- SSE streaming with thinking/reasoning tokens
-- Multi-account pool with round-robin
-- Auto-switch on quota exhaustion
-- WebSocket real-time dashboard
-- Camoufox browser-automated Google OAuth login
-- Postman signup onboarding automation (fill form, start trial)
-- SQLite request logging
+## Verification
 
-## Architecture
-
-```
-Client → Hono API → Account Pool (round-robin) → Postman Provider → Postman API
-                         ↕
-                    Dashboard (React) ← WebSocket
+```bash
+bun run check
+bun run test:coverage
 ```
 
-Bun + TypeScript + Hono + Drizzle/SQLite + React/Vite. Python + Camoufox for browser auth.
-
----
-
-> ⚠️ **EDUCATIONAL PURPOSE ONLY** — This project is provided **as-is** for research and educational purposes. The author is **not responsible** for any misuse, ToS violations, or consequences resulting from the use of this software. Use at your own risk.
+`bun run check` runs backend and Dashboard type checks, tests, and the production Dashboard build.

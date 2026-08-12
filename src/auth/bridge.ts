@@ -4,6 +4,7 @@ import { accounts } from "../db/schema";
 import { encrypt } from "../utils/crypto";
 import { broadcast } from "../ws/index";
 import { eq } from "drizzle-orm";
+import { decodeAccountTokens, encodeAccountTokens, normalizeTokens } from "./tokens";
 
 export interface PostmanLoginResult {
   postman_sid: string;
@@ -26,6 +27,9 @@ export async function loginPostmanAccount(
   headless: boolean,
   onLog?: (log: LoginLogEntry) => void,
 ): Promise<{ success: boolean; accountId?: number; error?: string }> {
+  if (!config.enableBrowserLogin) {
+    return { success: false, error: "Browser login is disabled. Add account tokens manually." };
+  }
   const scriptPath = config.authScriptCwd + "/postman_login.py";
 
   try {
@@ -120,15 +124,16 @@ export async function loginPostmanAccount(
       return { success: false, error: "Incomplete tokens from login script" };
     }
 
-    const tokens = {
+    const tokens = normalizeTokens({
       postman_sid: result.postman_sid,
       user_id: result.user_id,
       workspace_id: result.workspace_id,
       workspace_subdomain: result.workspace_subdomain,
-    };
+    });
+    if (!tokens) return { success: false, error: "Invalid workspace or incomplete tokens from login script" };
 
     const encryptedPassword = encrypt(password);
-    const tokensJson = JSON.stringify(tokens);
+    const tokensJson = encodeAccountTokens(tokens);
 
     const existing = await db.select().from(accounts).where(eq(accounts.email, email)).limit(1);
 
@@ -178,10 +183,7 @@ export async function validatePostmanSession(accountId: number): Promise<boolean
   if (!account?.tokens) return false;
 
   try {
-    const tokens = typeof account.tokens === "string"
-      ? JSON.parse(account.tokens)
-      : account.tokens;
-    return !!(tokens?.postman_sid && tokens?.workspace_subdomain);
+    return decodeAccountTokens(account.tokens) !== null;
   } catch {
     return false;
   }

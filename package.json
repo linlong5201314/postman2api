@@ -7,7 +7,10 @@
     "dev": "bun --watch src/index.ts",
     "migrate": "bun src/db/migrate.ts",
     "build": "cd dashboard && bun run build",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit && cd dashboard && bunx tsc --noEmit",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "check": "bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

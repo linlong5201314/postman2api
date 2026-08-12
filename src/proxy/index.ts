@@ -1,11 +1,11 @@
 import { db } from "../db/index";
 import { requestLogs } from "../db/schema";
 import type { NewRequestLog } from "../db/schema";
-import type { ChatCompletionRequest, ProviderResult } from "../provider/base";
+import type { ChatCompletionRequest } from "../provider/base";
 import { routeRequest } from "./router";
 import { pool } from "./pool";
 import { broadcast } from "../ws/index";
-import { config } from "../config";
+import { publicError, redactSensitive } from "../utils/redact";
 
 export async function handleChatCompletion(
   body: ChatCompletionRequest,
@@ -30,6 +30,7 @@ export async function handleChatCompletion(
     }
 
     if (result.success && result.response) {
+      pool.trackRequestEnd(account.id);
       await recordRequest({
         accountId: account.id,
         model: body.model,
@@ -46,6 +47,7 @@ export async function handleChatCompletion(
     }
 
     // Non-success
+    pool.trackRequestEnd(account.id);
     await recordRequest({
       accountId: account.id,
       model: body.model,
@@ -54,7 +56,7 @@ export async function handleChatCompletion(
       errorMessage: result.error || "Unknown error",
     });
 
-    return errorResponse(result.error || "Unknown error", 503);
+    return errorResponse(publicError(result.error, "Upstream request failed"), 503);
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     await recordRequest({
@@ -65,10 +67,10 @@ export async function handleChatCompletion(
     });
 
     if (errMsg.includes("No active accounts")) {
-      return errorResponse(errMsg, 503);
+      return errorResponse(publicError(errMsg, "No account is currently available"), 503);
     }
 
-    return errorResponse(errMsg, 500);
+    return errorResponse("Internal request failure", 500);
   }
 }
 
@@ -84,8 +86,25 @@ function wrapStream(
     signal?: AbortSignal;
   },
 ): Response {
-  let logged = false;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let finalized = false;
+  let reader: ReturnType<typeof stream.getReader> | undefined;
+  const startedAt = Date.now() - ctx.durationMs;
+
+  const finalize = async (status: "success" | "error", error?: unknown) => {
+    if (finalized) return;
+    finalized = true;
+    pool.trackRequestEnd(ctx.accountId);
+    await recordRequest({
+      accountId: ctx.accountId,
+      model: ctx.model,
+      promptTokens: status === "success" ? ctx.promptTokens : 0,
+      completionTokens: status === "success" ? ctx.completionTokens : 0,
+      totalTokens: status === "success" ? ctx.totalTokens : 0,
+      status,
+      durationMs: Date.now() - startedAt,
+      errorMessage: error ? (error instanceof Error ? error.message : String(error)) : undefined,
+    });
+  };
 
   const wrappedStream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -96,39 +115,20 @@ function wrapStream(
           if (done) break;
           controller.enqueue(value);
         }
-        if (!logged) {
-          logged = true;
-          await recordRequest({
-            accountId: ctx.accountId,
-            model: ctx.model,
-            promptTokens: ctx.promptTokens,
-            completionTokens: ctx.completionTokens,
-            totalTokens: ctx.totalTokens,
-            status: "success",
-            durationMs: Date.now() - Date.now() + ctx.durationMs,
-          });
-        }
+        await finalize("success");
         controller.close();
       } catch (err) {
-        if (!logged) {
-          logged = true;
-          await recordRequest({
-            accountId: ctx.accountId,
-            model: ctx.model,
-            status: "error",
-            durationMs: 0,
-            errorMessage: err instanceof Error ? err.message : String(err),
-          });
-        }
+        await finalize("error", err);
         controller.error(err);
       }
     },
-    cancel() {
+    async cancel() {
       if (reader) {
-        reader.cancel().catch(() => {});
+        await reader.cancel().catch(() => {});
       } else {
-        stream.cancel().catch(() => {});
+        await stream.cancel().catch(() => {});
       }
+      await finalize("error", "Client disconnected");
     },
   });
 
@@ -149,7 +149,7 @@ async function recordRequest(entry: NewRequestLog): Promise<void> {
     });
     broadcast({ type: "request_completed", data: { status: entry.status, model: entry.model } });
   } catch (err) {
-    console.error("[proxy] Failed to log request:", err);
+    console.error("[proxy] Failed to log request:", redactSensitive(err));
   }
 }
 

@@ -3,10 +3,13 @@ import { db } from "../db/index";
 import { accounts, requestLogs } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { encrypt } from "../utils/crypto";
+import { decodeAccountTokens, encodeAccountTokens } from "../auth/tokens";
+import { normalizeWorkspaceSubdomain } from "../utils/workspace";
 import { loginPostmanAccount } from "../auth/bridge";
 import { warmupAccount } from "../auth/warmup";
 import { pool } from "../proxy/pool";
 import { broadcast } from "../ws/index";
+import { publicError } from "../utils/redact";
 
 export const accountsRouter = new Hono();
 
@@ -14,10 +17,7 @@ export const accountsRouter = new Hono();
 accountsRouter.get("/", async (c) => {
   const allAccounts = await db.select().from(accounts);
   const sanitized = allAccounts.map((acc) => {
-    let tokens: any = acc.tokens;
-    if (typeof tokens === "string") {
-      try { tokens = JSON.parse(tokens); } catch { tokens = {}; }
-    }
+    const tokens = decodeAccountTokens(acc.tokens);
     return {
       id: acc.id,
       email: acc.email,
@@ -29,6 +29,7 @@ accountsRouter.get("/", async (c) => {
       lastLoginAt: acc.lastLoginAt,
       errorMessage: acc.errorMessage,
       hasTokens: !!(tokens?.postman_sid),
+      proxyId: acc.proxyId,
       workspaceSubdomain: tokens?.workspace_subdomain || null,
       createdAt: acc.createdAt,
       updatedAt: acc.updatedAt,
@@ -49,7 +50,7 @@ accountsRouter.post("/login", async (c) => {
 
   const result = await loginPostmanAccount(body.email, body.password, headless);
   if (!result.success) {
-    return c.json({ error: result.error }, 400);
+    return c.json({ error: publicError(result.error, "Login failed") }, 400);
   }
 
   return c.json({ success: true, accountId: result.accountId });
@@ -62,7 +63,7 @@ accountsRouter.post("/", async (c) => {
     tokens?: { postman_sid: string; user_id: string; workspace_id: string; workspace_subdomain: string };
   };
 
-  if (!body.email || !body.tokens?.postman_sid) {
+  if (!body.email || !body.tokens?.postman_sid || !body.tokens.user_id || !body.tokens.workspace_id || !normalizeWorkspaceSubdomain(body.tokens.workspace_subdomain)) {
     return c.json({ error: "Email and tokens (postman_sid, user_id, workspace_id, workspace_subdomain) required" }, 400);
   }
 
@@ -71,7 +72,7 @@ accountsRouter.post("/", async (c) => {
   if (existing) {
     const [updated] = await db.update(accounts)
       .set({
-          tokens: JSON.stringify(body.tokens),
+          tokens: encodeAccountTokens(body.tokens),
         status: "active",
         lastLoginAt: new Date(),
         updatedAt: new Date(),
@@ -86,7 +87,7 @@ accountsRouter.post("/", async (c) => {
   const [created] = await db.insert(accounts).values({
     email: body.email,
     password: encrypt("manual"),
-    tokens: JSON.stringify(body.tokens),
+    tokens: encodeAccountTokens(body.tokens),
     status: "active",
     lastLoginAt: new Date(),
     createdAt: new Date(),

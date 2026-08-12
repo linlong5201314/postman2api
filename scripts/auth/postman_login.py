@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Postman manual login via Playwright (Microsoft Edge).
+"""Postman manual login via Playwright.
 
 Opens Edge for the user to manually log in.
 Extracts session cookie and workspace info once logged in.
@@ -14,7 +14,6 @@ import json
 import re
 import sys
 import time
-from urllib.parse import urlparse
 
 # Optional: Add project root to sys.path if needed
 import os
@@ -56,16 +55,15 @@ async def _is_on_postman_workspace(page) -> bool:
 async def login_postman(email: str, password: str, headless: bool) -> dict:
     from playwright.async_api import async_playwright
 
-    log("init", f"Starting manual login process (ignoring headless={headless} to allow manual login)...")
+    log("init", f"Starting login process (headless={headless})...")
     
     async with async_playwright() as p:
         browser = None
         try:
-            log("browser", "Launching Microsoft Edge...")
+            log("browser", "Launching Chromium...")
             browser = await p.chromium.launch(
-                headless=False, # Force false so user can log in
-                channel="msedge",
-                args=["--start-maximized"]
+                headless=headless,
+                args=[] if headless else ["--start-maximized"]
             )
             context = await browser.new_context()
             page = await context.new_page()
@@ -123,7 +121,7 @@ async def login_postman(email: str, password: str, headless: bool) -> dict:
                 log("cookie", "FAILED: postman.sid not found", "error")
                 return {"error": "postman.sid cookie not found"}
 
-            log("cookie", f"postman.sid: {postman_sid[:40]}...")
+            log("cookie", "postman.sid extracted successfully")
 
             log("token", "Fetching handshake token...")
             user_id = ""
@@ -186,10 +184,10 @@ async def login_postman(email: str, password: str, headless: bool) -> dict:
                     pass
 
 def main():
-    parser = argparse.ArgumentParser(description="Postman manual login via Edge")
+    parser = argparse.ArgumentParser(description="Postman login via Playwright")
     parser.add_argument("--email", required=False, help="Email (ignored for manual login)")
     parser.add_argument("--password", required=False, help="Password (ignored for manual login)")
-    parser.add_argument("--headless", action="store_true", default=False, help="Ignored")
+    parser.add_argument("--headless", action="store_true", default=False)
     args, unknown = parser.parse_known_args()
 
     # Disable stdout buffering

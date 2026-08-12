@@ -1,11 +1,16 @@
 node_modules
+dashboard/node_modules
 data
 .env
+.env.*
 scripts/auth/.venv
 dashboard/dist
-dashboard/node_modules
 .git
+.github
 *.db
 *.db-wal
 *.db-shm
+.omx
 .omo
+coverage
+*.log

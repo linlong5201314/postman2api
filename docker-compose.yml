@@ -2,13 +2,20 @@ services:
   postman2api:
     build: .
     ports:
-      - "1930:1930"
+      - "${PORT:-1930}:${PORT:-1930}"
     volumes:
       - ./data:/app/data
     environment:
-      - PORT=1930
-      - API_KEY=postman2api-secret-key
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6}
-      - DATABASE_PATH=/app/data/postman2api.db
-      - CAMOUFOX_HEADLESS=true
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: ${PORT:-1930}
+      ADMIN_KEY: ${ADMIN_KEY:?Set ADMIN_KEY in .env}
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
+      DATABASE_PATH: /app/data/postman2api.db
+      REQUIRE_PERSISTENT_STORAGE: "false"
+      ENABLE_BROWSER_LOGIN: ${ENABLE_BROWSER_LOGIN:-false}
+      CAMOUFOX_HEADLESS: ${CAMOUFOX_HEADLESS:-true}
+      PROXY_BOOTSTRAP: ${PROXY_BOOTSTRAP:-}
+      PROXY_TEST_URL: ${PROXY_TEST_URL:-https://api.ipify.org?format=json}
     restart: unless-stopped
