@@ -35,10 +35,12 @@ RUN python3 -m venv scripts/auth/.venv \
     && mkdir -p /app/data \
     && chown -R bun:bun /app
 
-USER bun
+USER root
+COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
+RUN chmod 0755 ./scripts/docker-entrypoint.sh
 
 EXPOSE 1930
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:'+process.env.PORT+'/health');if(!r.ok)process.exit(1)"]
 
-CMD ["bun", "src/index.ts"]
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
