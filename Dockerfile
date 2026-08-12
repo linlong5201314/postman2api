@@ -2,7 +2,9 @@ FROM oven/bun:1.3.8-slim AS dashboard-build
 
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/bun.lock ./
-RUN bun install --frozen-lockfile
+# Railway may provide NODE_ENV=production during the image build. The
+# dashboard typecheck and Vite build require its devDependencies.
+RUN bun install --frozen-lockfile --production=false
 COPY dashboard/ ./
 RUN bun run typecheck && bun run build
 
