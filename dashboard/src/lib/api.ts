@@ -35,7 +35,9 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const body: any = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
+    const error = new Error(body.error || `HTTP ${res.status}`) as Error & { details?: any };
+    error.details = body;
+    throw error;
   }
   return res.json() as Promise<T>;
 }
@@ -96,11 +98,29 @@ export async function fetchAccounts(): Promise<{ data: Account[] }> {
   return api("/api/accounts");
 }
 
-export async function loginAccount(email: string, password: string, headless: boolean): Promise<{ success: boolean }> {
-  return api("/api/accounts/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password, headless }),
-  });
+export async function loginAccount(email: string, password: string, headless: boolean, proxy?: string): Promise<{ success: boolean }> {
+  try {
+    return await api("/api/accounts/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password, headless, ...(proxy ? { proxy } : {}) }),
+    });
+  } catch (cause) {
+    const details = (cause as Error & { details?: any }).details;
+    const logs: string[] = Array.isArray(details?.logs) ? details.logs : [];
+    const message = cause instanceof Error ? cause.message : "Login failed";
+    if (logs.length === 0) throw cause;
+    const tail = logs.slice(-3).map((line: string) => {
+      try {
+        const entry = JSON.parse(line) as { step?: string; msg?: string };
+        return entry.step ? `${entry.step}: ${entry.msg}` : line;
+      } catch {
+        return line;
+      }
+    });
+    const error = new Error(`${message} — ${tail.join(" | ")}`) as Error & { details?: any };
+    error.details = details;
+    throw error;
+  }
 }
 
 export async function addAccountManual(email: string, tokens: any): Promise<{ success: boolean }> {

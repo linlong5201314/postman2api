@@ -41,15 +41,29 @@ accountsRouter.get("/", async (c) => {
 
 // Add account via browser login
 accountsRouter.post("/login", async (c) => {
-  const body = await c.req.json().catch(() => ({})) as { email?: string; password?: string; headless?: boolean };
+  const body = await c.req.json().catch(() => ({})) as { email?: string; password?: string; headless?: boolean; proxy?: string };
   if (!body.email || !body.password) {
     return c.json({ error: "Email and password required" }, 400);
+  }
+
+  const proxy = typeof body.proxy === "string" && body.proxy.trim() ? body.proxy.trim() : undefined;
+  if (proxy !== undefined) {
+    const normalized = proxy.includes("://") ? proxy : `http://${proxy}`;
+    let parsed: URL;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      return c.json({ error: "Proxy must be a valid http(s) URL" }, 400);
+    }
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+      return c.json({ error: "Proxy must be a valid http(s) URL" }, 400);
+    }
   }
 
   const headless = body.headless ?? false;
   broadcast({ type: "login_start", data: { email: body.email, headless } });
 
-  const result = await loginPostmanAccount(body.email, body.password, headless);
+  const result = await loginPostmanAccount(body.email, body.password, headless, proxy);
   if (!result.success) {
     return c.json({ error: publicError(result.error, "Login failed"), logs: result.logs || [] }, 400);
   }

@@ -310,6 +310,7 @@ function AddAccountModal({
   const [mode, setMode] = useState<"manual" | "login">("manual");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [proxy, setProxy] = useState("");
   const [tokens, setTokens] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -317,7 +318,7 @@ function AddAccountModal({
     setSaving(true);
     try {
       if (mode === "login") {
-        await loginAccount(email, password, true);
+        await loginAccount(email, password, true, proxy.trim() || undefined);
       } else {
         await addAccountManual(email, JSON.parse(tokens));
       }
@@ -339,7 +340,11 @@ function AddAccountModal({
       </div>
       <label className="settings-row"><span>Email</span><input className="input" onChange={(event) => setEmail(event.target.value)} value={email} /></label>
       {mode === "login" ? (
-        <label className="settings-row"><span>Password</span><input className="input" onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></label>
+        <>
+          <label className="settings-row"><span>Password</span><input className="input" onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></label>
+          <label className="settings-row"><span>Proxy (optional)</span><input className="input" onChange={(event) => setProxy(event.target.value)} placeholder="http://user:pass@host:port" value={proxy} /></label>
+          <small>Leave empty for a direct connection. A residential proxy improves the chance of passing the Cloudflare Turnstile check on Postman.</small>
+        </>
       ) : (
         <label className="settings-row"><span>Tokens JSON</span><textarea className="input" onChange={(event) => setTokens(event.target.value)} placeholder='{"postman_sid":"6b0c...","workspace_subdomain":"linlongli-2423114"}' value={tokens} /></label>
       )}

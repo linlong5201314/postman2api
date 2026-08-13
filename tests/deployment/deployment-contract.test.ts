@@ -71,6 +71,17 @@ describe("deployment contract", () => {
     expect(bridge).toContain('stdin: "pipe"');
   });
 
+  test("browser login accepts an optional proxy without leaking it into argv", async () => {
+    const script = await read("scripts/auth/postman_login.py");
+    const bridge = await read("src/auth/bridge.ts");
+
+    expect(script).toContain("def parse_proxy");
+    expect(script).toContain("payload.get(\"proxy\", \"\")");
+    expect(script).toContain("kwargs[\"proxy\"] = proxy");
+    expect(bridge).toContain("proxy: proxy || \"\"");
+    expect(bridge).not.toContain('"--proxy", proxy');
+  });
+
   test("headless browser login fails clearly and cannot retain a process indefinitely", async () => {
     const script = await read("scripts/auth/postman_login.py");
     const bridge = await read("src/auth/bridge.ts");

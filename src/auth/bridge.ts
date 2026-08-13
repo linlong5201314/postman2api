@@ -46,6 +46,7 @@ export async function loginPostmanAccount(
   email: string,
   password: string,
   headless: boolean,
+  proxy?: string,
   onLog?: (log: LoginLogEntry) => void,
 ): Promise<{ success: boolean; accountId?: number; error?: string; logs?: string[] }> {
   let debugLines: string[] = [];
@@ -82,7 +83,7 @@ export async function loginPostmanAccount(
       stderr: "pipe",
     });
 
-    proc.stdin.write(JSON.stringify({ email, password, headless }));
+    proc.stdin.write(JSON.stringify({ email, password, headless, proxy: proxy || "" }));
     proc.stdin.end();
 
     const processTimeoutMs = headless

@@ -54,7 +54,7 @@ async function cmdLogin(args: string[]): Promise<void> {
   const [email, password] = args;
   const headless = args.includes("--headless");
   console.log(c(`Logging in ${email} via Camoufox (headless=${headless})...`, "cyan"));
-  const result = await loginPostmanAccount(email, password, headless, (log) => {
+  const result = await loginPostmanAccount(email, password, headless, undefined, (log) => {
     console.log(c(`  [${log.step}]`, "blue") + ` ${log.msg}`);
   });
   if (result.success) {

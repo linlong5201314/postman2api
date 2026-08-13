@@ -15,6 +15,7 @@ import re
 import sys
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 # Optional: Add project root to sys.path if needed
 import os
@@ -22,11 +23,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 POSTMAN_LOGIN_URL = "https://identity.getpostman.com/login"
 HANDSHAKE_TOKEN_URL = "https://ra.gw.postman.co/v1/handshake/token?agent=cloud"
-HEADLESS_LOGIN_TIMEOUT_SECONDS = 60
+HEADLESS_LOGIN_TIMEOUT_SECONDS = 90
 MANUAL_LOGIN_TIMEOUT_SECONDS = 300
 # Cloudflare Turnstile non-interactive challenges can take a while to issue
-# a token, especially from datacenter IPs. Fail only if it is still empty
-# after this grace period following credential submission.
+# a token, especially from datacenter IPs. Challenge markers (iframe, copy)
+# and an empty Turnstile token only fail the attempt after this grace period
+# following credential submission, so a transient challenge that resolves by
+# itself does not abort the login.
 CAPTCHA_GRACE_SECONDS = 30
 CHALLENGE_WAIT_SECONDS = 45
 RETRY_CAPTCHA_MARKER = "__retry_captcha__"
@@ -87,7 +90,28 @@ def decode_jwt_payload(token: str) -> dict:
     except Exception:
         return {}
 
-def read_login_input() -> tuple[str, str, bool]:
+def parse_proxy(raw: str) -> dict | None:
+    """Parse an http/https proxy URL into a Playwright proxy dict."""
+    if not raw or not raw.strip():
+        return None
+    value = raw.strip()
+    if "://" not in value:
+        value = "http://" + value
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    port = parsed.port or (80 if parsed.scheme == "http" else 443)
+    proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{port}"}
+    if parsed.username:
+        proxy["username"] = parsed.username
+        proxy["password"] = parsed.password or ""
+    return proxy
+
+
+def read_login_input() -> tuple[str, str, bool, str]:
     if sys.stdin.isatty():
         raw = ""
     else:
@@ -102,6 +126,7 @@ def read_login_input() -> tuple[str, str, bool]:
                 str(payload.get("email", "")),
                 str(payload.get("password", "")),
                 bool(payload.get("headless", False)),
+                str(payload.get("proxy", "") or ""),
             )
     except (TypeError, ValueError):
         pass
@@ -109,6 +134,7 @@ def read_login_input() -> tuple[str, str, bool]:
         os.getenv("POSTMAN_LOGIN_EMAIL", ""),
         os.getenv("POSTMAN_LOGIN_PASSWORD", ""),
         os.getenv("POSTMAN_LOGIN_HEADLESS", "").lower() == "true",
+        os.getenv("POSTMAN_LOGIN_PROXY", ""),
     )
 
 async def _is_challenge_page(page) -> bool:
@@ -291,15 +317,24 @@ async def _headless_login_blocker(page, submitted_at: float) -> str | None:
     captcha_text = any(marker in page_text for marker in (
         "verify you are human", "captcha", "security check",
     ))
+
     turnstile_empty = False
-    if "identity.getpostman.com" in current_url and time.monotonic() - submitted_at >= CAPTCHA_GRACE_SECONDS:
+    if "identity.getpostman.com" in current_url:
         try:
             turnstile = page.locator('input[name="cf-turnstile-response"]').first
             if await turnstile.count() > 0:
                 turnstile_empty = not (await turnstile.input_value(timeout=250)).strip()
         except Exception:
             pass
+
+    # Cloudflare challenge markers are often transient: the page reloads itself
+    # once the non-interactive challenge resolves, and the Turnstile token gets
+    # filled by the widget. Only fail when the challenge is still unresolved
+    # after the grace period, so self-resolving challenges do not abort the
+    # login attempt.
     if captcha_visible or captcha_text or turnstile_empty:
+        if time.monotonic() - submitted_at < CAPTCHA_GRACE_SECONDS:
+            return None
         return (
             "Postman requires CAPTCHA/Turnstile verification; use a headed browser "
             "or import tokens manually."
@@ -307,14 +342,16 @@ async def _headless_login_blocker(page, submitted_at: float) -> str | None:
 
     return None
 
-async def _launch_browser(p, headless: bool):
+async def _launch_browser(p, headless: bool, proxy: dict | None):
+    if proxy:
+        log("proxy", "Browser traffic will use the supplied proxy")
     try:
-        return await _launch_camoufox(p, headless)
+        return await _launch_camoufox(p, headless, proxy)
     except Exception as exc:
         log("browser", f"Camoufox unavailable ({exc}); falling back to Chromium", "warn")
-        return await _launch_chromium(p, headless)
+        return await _launch_chromium(p, headless, proxy)
 
-async def _launch_camoufox(p, headless: bool):
+async def _launch_camoufox(p, headless: bool, proxy: dict | None):
     from camoufox.addons import DefaultAddons
     from camoufox.async_api import AsyncNewBrowser
 
@@ -325,6 +362,8 @@ async def _launch_camoufox(p, headless: bool):
         "addons": [],
         "exclude_addons": [DefaultAddons.UBO],
     }
+    if proxy:
+        kwargs["proxy"] = proxy
     if headless:
         # Virtual display (Xvfb) works on Linux; plain headless elsewhere.
         kwargs["headless"] = "virtual" if sys.platform != "win32" else True
@@ -332,7 +371,7 @@ async def _launch_camoufox(p, headless: bool):
     log("browser", "Launched Camoufox (anti-detection Firefox)")
     return browser
 
-async def _launch_chromium(p, headless: bool):
+async def _launch_chromium(p, headless: bool, proxy: dict | None):
     launch_args = [
         "--disable-blink-features=AutomationControlled",
         "--no-default-browser-check",
@@ -341,26 +380,29 @@ async def _launch_chromium(p, headless: bool):
     ]
     if not headless:
         launch_args.append("--start-maximized")
+    launch_kwargs: dict[str, Any] = {"headless": headless, "args": launch_args}
+    if proxy:
+        launch_kwargs["proxy"] = proxy
     try:
-        browser = await p.chromium.launch(headless=headless, channel="chromium", args=launch_args)
+        browser = await p.chromium.launch(channel="chromium", **launch_kwargs)
     except Exception:
         log("browser", "Full Chromium unavailable; falling back to bundled build", "warn")
-        browser = await p.chromium.launch(headless=headless, args=launch_args)
+        browser = await p.chromium.launch(**launch_kwargs)
     log("browser", "Launched Chromium")
     return browser
 
-async def login_postman(email: str, password: str, headless: bool) -> dict:
+async def login_postman(email: str, password: str, headless: bool, proxy: dict | None) -> dict:
     from playwright.async_api import async_playwright
 
     if headless and (not email or not password):
         return {"error": "Headless login requires both a Postman email/username and password."}
 
-    log("init", f"Starting login process (headless={headless})...")
+    log("init", f"Starting login process (headless={headless}, proxy={'yes' if proxy else 'no'})...")
     
     async with async_playwright() as p:
         browser = None
         try:
-            browser = await _launch_browser(p, headless)
+            browser = await _launch_browser(p, headless, proxy)
             is_camoufox = browser.browser_type.name == "firefox"
 
             context = await browser.new_context(
@@ -540,11 +582,12 @@ def main():
     # Disable stdout buffering
     sys.stdout.reconfigure(line_buffering=True)
     
-    stdin_email, stdin_password, stdin_headless = read_login_input()
+    stdin_email, stdin_password, stdin_headless, stdin_proxy = read_login_input()
     email = args.email or stdin_email
     password = args.password or stdin_password
     headless = args.headless or stdin_headless
-    result = asyncio.run(login_postman(email, password, headless))
+    proxy = parse_proxy(stdin_proxy)
+    result = asyncio.run(login_postman(email, password, headless, proxy))
     print(json.dumps(result))
 
 if __name__ == "__main__":
