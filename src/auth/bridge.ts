@@ -49,11 +49,11 @@ export async function loginPostmanAccount(
   proxy?: string,
   onLog?: (log: LoginLogEntry) => void,
 ): Promise<{ success: boolean; accountId?: number; error?: string; logs?: string[] }> {
-  let debugLines: string[] = [];
+  const stderrLines: string[] = [];
   const fail = (error: string) => {
     broadcast({ type: "login_done", data: { email, success: false, error } });
     console.error(`[auth:bridge] Login failed for ${email}: ${error}`);
-    const lastLines = debugLines.slice(-30);
+    const lastLines = stderrLines.slice(-30);
     if (lastLines.length > 0) {
       console.error(`[auth:bridge] Login script log (last ${lastLines.length} lines):\n${lastLines.join("\n")}`);
     }
@@ -91,7 +91,6 @@ export async function loginPostmanAccount(
       : LOGIN_PROCESS_TIMEOUT_MS.headed;
     let processTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const stderrLines: string[] = [];
     const stderrReader = (async () => {
       const reader = proc.stderr.getReader();
       const decoder = new TextDecoder();

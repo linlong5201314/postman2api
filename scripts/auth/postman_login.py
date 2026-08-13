@@ -239,10 +239,37 @@ async def _fill_credentials(page, email: str, password: str) -> str | None:
         return "Password input was not found; the provider may require OAuth, MFA, or CAPTCHA"
 
     await password_input.fill(password)
+    # Postman rejects the submit while the Turnstile token is still empty.
+    token_info = await _wait_for_turnstile_token(page)
+    if token_info:
+        log("captcha", token_info, "warn")
     if not await _submit_login_step(page):
         return "Could not submit the password step"
     log("credentials", "Credentials submitted; waiting for provider redirect")
     return None
+
+async def _wait_for_turnstile_token(page, timeout: float = 12.0) -> str | None:
+    """Wait briefly for the invisible Turnstile widget to issue a token.
+
+    Postman rejects submissions whose cf-turnstile-response is still empty,
+    so wait for the widget to auto-solve before clicking Sign In. Returns an
+    info message when no token was issued in time, or None when a token is
+    already present.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            turnstile = page.locator('input[name="cf-turnstile-response"]').first
+            if await turnstile.count() > 0:
+                value = (await turnstile.input_value(timeout=500)).strip()
+                if value:
+                    log("captcha", "Turnstile token issued before submission")
+                    return None
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+    return "No Turnstile token before submission; submitting anyway"
+
 
 async def _visible_text(page, selectors: tuple[str, ...]) -> str:
     for selector in selectors:
@@ -358,9 +385,12 @@ async def _launch_camoufox(p, headless: bool, proxy: dict | None):
     kwargs: dict[str, Any] = {
         "humanize": True,
         "os": "windows",
+        "locale": ["zh-CN", "zh", "en-US", "en"],
         "block_webrtc": True,
         "addons": [],
         "exclude_addons": [DefaultAddons.UBO],
+        # Allows clicking the Turnstile checkbox inside its cross-origin iframe.
+        "disable_coop": True,
     }
     if proxy:
         kwargs["proxy"] = proxy
@@ -391,6 +421,205 @@ async def _launch_chromium(p, headless: bool, proxy: dict | None):
     log("browser", "Launched Chromium")
     return browser
 
+async def _click_turnstile_widget(page) -> bool:
+    """Click the Cloudflare Turnstile checkbox inside its iframe."""
+    try:
+        frame_locator = page.frame_locator(
+            'iframe[src*="challenges.cloudflare.com"], iframe[title*="challenge" i]'
+        ).first
+        try:
+            checkbox = frame_locator.locator('input[type="checkbox"]').first
+            await checkbox.click(timeout=1500)
+            return True
+        except Exception:
+            pass
+        box = await frame_locator.locator("body").bounding_box(timeout=1500)
+        if box:
+            width = min(box["width"], 300)
+            height = min(box["height"], 70)
+            await page.mouse.click(box["x"] + width / 2, box["y"] + height / 2)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _run_login_attempt(
+    p, browser, email: str, password: str, headless: bool, attempt: int
+) -> tuple[str, str, Any | None, Any | None]:
+    """Run one login attempt in its own browser context.
+
+    Returns (outcome, detail, context, page). On "ok" the caller extracts the
+    session from the still-open context/page and then closes the browser; on
+    "retry"/"error" both are None.
+    """
+    is_camoufox = browser.browser_type.name == "firefox"
+    # Camoufox injects its own consistent fingerprint (locale, timezone,
+    # headers); overriding them here would create mismatches that Cloudflare
+    # can detect. Only the Chromium fallback needs the manual overrides.
+    context_kwargs: dict[str, Any] = {"viewport": {"width": 1366, "height": 768}}
+    if not is_camoufox:
+        context_kwargs.update({
+            "locale": "zh-CN",
+            "timezone_id": "Asia/Shanghai",
+            "user_agent": STEALTH_UA,
+        })
+    context = await browser.new_context(**context_kwargs)
+    page = await context.new_page()
+
+    # Evade basic bot checks for Chromium; Camoufox injects its own fingerprint.
+    if not is_camoufox:
+        await page.add_init_script(STEALTH_INIT_SCRIPT)
+
+    log("navigate", f"Opening {POSTMAN_LOGIN_URL} (attempt {attempt + 1})...")
+    await page.goto(POSTMAN_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+
+    # Cloudflare may present a managed challenge before the sign-in form.
+    if not await _wait_for_signin_form(page):
+        if attempt == 0:
+            log("challenge", "Cloudflare challenge did not resolve; retrying", "warn")
+            return "retry", "Cloudflare challenge did not resolve", None, None
+        return "error", (
+            "Postman is showing a Cloudflare challenge that did not resolve. "
+            "Try again later or import tokens manually."
+        ), None, None
+
+    credential_error = await _fill_credentials(page, email, password)
+    if credential_error:
+        if headless:
+            return "error", credential_error, None, None
+        log("credentials", credential_error, "warn")
+        log("wait", "Waiting for you to complete login manually...")
+    elif not email or not password:
+        log("wait", "Waiting for you to log in manually...")
+
+    # Poll until the provider reaches a workspace or exposes a terminal login state.
+    submitted_at = time.monotonic()
+    timeout_seconds = HEADLESS_LOGIN_TIMEOUT_SECONDS if headless else MANUAL_LOGIN_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout_seconds
+    turnstile_clicked = False
+
+    while time.monotonic() < deadline:
+        try:
+            current_url = page.url
+        except Exception:
+            return "error", "Browser page lost or closed", None, None
+
+        if await _is_on_postman_workspace(page):
+            match = re.search(r'https://([a-z0-9-]+)\.postman\.co', current_url)
+            subdomain = match.group(1) if match else "go"
+            return "ok", subdomain, context, page
+
+        if headless and email and password:
+            # When a Turnstile checkbox appears, click it once and give the
+            # widget time to issue a token instead of declaring failure.
+            if not turnstile_clicked:
+                try:
+                    challenge = page.locator(
+                        'iframe[src*="challenges.cloudflare.com"], iframe[title*="challenge" i]'
+                    ).first
+                    if await challenge.is_visible(timeout=250):
+                        if await _click_turnstile_widget(page):
+                            log("captcha", "Clicked the Turnstile checkbox; waiting for verification")
+                            turnstile_clicked = True
+                            submitted_at = time.monotonic()
+                except Exception:
+                    pass
+
+            blocker = await _headless_login_blocker(page, submitted_at)
+            if blocker:
+                if blocker == RETRY_CAPTCHA_MARKER and attempt == 0:
+                    log("captcha", "Turnstile rejected the attempt; retrying with a fresh browser", "warn")
+                    return "retry", "captcha", None, None
+                log("error", blocker, "error")
+                return "error", blocker, None, None
+
+        await asyncio.sleep(0.5)
+
+    error = (
+        f"Postman login did not reach a workspace within {HEADLESS_LOGIN_TIMEOUT_SECONDS} seconds."
+        if headless
+        else "Manual Postman login timed out after 5 minutes."
+    )
+    return "error", error, None, None
+
+
+async def _extract_session(context, page, workspace_subdomain: str) -> dict:
+    log("redirect", f"Postman workspace detected: {page.url}")
+    log("redirect", f"Subdomain: {workspace_subdomain}")
+
+    log("cookie", "Extracting postman.sid...")
+    cookies = await context.cookies()
+    postman_sid = None
+    for cookie in cookies:
+        if cookie.get("name") == "postman.sid":
+            domain = cookie.get("domain", "")
+            if ".postman.co" in domain or domain == "postman.co":
+                postman_sid = cookie.get("value")
+                break
+    if not postman_sid:
+        for cookie in cookies:
+            if cookie.get("name") == "postman.sid" and cookie.get("value"):
+                postman_sid = cookie.get("value")
+                break
+
+    if not postman_sid:
+        log("cookie", "FAILED: postman.sid not found", "error")
+        return {"error": "postman.sid cookie not found"}
+
+    log("cookie", "postman.sid extracted successfully")
+
+    log("token", "Fetching handshake token...")
+    user_id = ""
+    workspace_id = ""
+    try:
+        handshake = await page.evaluate(
+            f"""async () => {{
+                const resp = await fetch('{HANDSHAKE_TOKEN_URL}', {{credentials: 'include'}});
+                return await resp.json();
+            }}"""
+        )
+        if handshake and handshake.get("token"):
+            jwt_payload = decode_jwt_payload(handshake["token"])
+            user_id = str(jwt_payload.get("userId", ""))
+            workspace_id = str(jwt_payload.get("teamId", ""))
+            log("token", f"userId={user_id}, teamId={workspace_id}")
+    except Exception as e:
+        log("token", f"Handshake failed: {e}", "warn")
+
+    if not user_id or not workspace_id:
+        log("token", "Fallback to god.postman.co...")
+        try:
+            user_info = await page.evaluate(
+                """async () => {
+                    const resp = await fetch('https://god.postman.co/api/users/me', {credentials: 'include'});
+                    return await resp.json();
+                }"""
+            )
+            if user_info:
+                user_id = str(user_info.get("id", user_id))
+                orgs = user_info.get("user_organizations", {}).get("organizations", [])
+                if orgs:
+                    workspace_id = str(orgs[0].get("id", workspace_id))
+                log("token", f"Fallback: userId={user_id}, workspace_id={workspace_id}")
+        except Exception as e:
+            log("token", f"Fallback failed: {e}", "warn")
+
+    if not user_id:
+        user_id = "unknown"
+    if not workspace_id:
+        workspace_id = "unknown"
+
+    log("done", f"user_id={user_id} workspace_id={workspace_id} subdomain={workspace_subdomain}")
+
+    return {
+        "postman_sid": postman_sid,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+        "workspace_subdomain": workspace_subdomain,
+    }
+
+
 async def login_postman(email: str, password: str, headless: bool, proxy: dict | None) -> dict:
     from playwright.async_api import async_playwright
 
@@ -398,179 +627,40 @@ async def login_postman(email: str, password: str, headless: bool, proxy: dict |
         return {"error": "Headless login requires both a Postman email/username and password."}
 
     log("init", f"Starting login process (headless={headless}, proxy={'yes' if proxy else 'no'})...")
-    
+
     async with async_playwright() as p:
-        browser = None
-        try:
-            browser = await _launch_browser(p, headless, proxy)
-            is_camoufox = browser.browser_type.name == "firefox"
-
-            context = await browser.new_context(
-                viewport={"width": 1366, "height": 768},
-                locale="zh-CN",
-                timezone_id="Asia/Shanghai",
-                **({} if is_camoufox else {"user_agent": STEALTH_UA}),
-            )
-            page = await context.new_page()
-
-            # Evade basic bot checks for Chromium; Camoufox injects its own fingerprint.
-            if not is_camoufox:
-                await page.add_init_script(STEALTH_INIT_SCRIPT)
-
-            # Cloudflare challenge + Turnstile can be flaky. Retry the whole
-            # navigation/credential flow once before giving up.
-            login_done = False
-            workspace_subdomain = "go"
-            for attempt in range(2):
-                log("navigate", f"Opening {POSTMAN_LOGIN_URL} (attempt {attempt + 1})...")
-                await page.goto(POSTMAN_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
-
-                # Cloudflare may present a managed challenge before the sign-in form.
-                if not await _wait_for_signin_form(page):
-                    if attempt == 0:
-                        log("challenge", "Cloudflare challenge did not resolve; retrying", "warn")
-                        continue
-                    return {
-                        "error": (
-                            "Postman is showing a Cloudflare challenge that did not resolve. "
-                            "Try again later or import tokens manually."
-                        )
-                    }
-
-                credential_error = await _fill_credentials(page, email, password)
-                if credential_error:
-                    if headless:
-                        log("error", credential_error, "error")
-                        return {"error": credential_error}
-                    log("credentials", credential_error, "warn")
-                    log("wait", "Waiting for you to complete login manually...")
-                elif not email or not password:
-                    log("wait", "Waiting for you to log in manually...")
-
-                # Poll until the provider reaches a workspace or exposes a terminal login state.
-                submitted_at = time.monotonic()
-                timeout_seconds = HEADLESS_LOGIN_TIMEOUT_SECONDS if headless else MANUAL_LOGIN_TIMEOUT_SECONDS
-                deadline = time.monotonic() + timeout_seconds
-
-                while time.monotonic() < deadline:
-                    try:
-                        current_url = page.url
-                    except Exception:
-                        return {"error": "Browser page lost or closed"}
-
-                    if await _is_on_postman_workspace(page):
-                        match = re.search(r'https://([a-z0-9-]+)\.postman\.co', current_url)
-                        if match:
-                            workspace_subdomain = match.group(1)
-                        login_done = True
-                        break
-
-                    if headless and email and password:
-                        blocker = await _headless_login_blocker(page, submitted_at)
-                        if blocker:
-                            if blocker == RETRY_CAPTCHA_MARKER and attempt == 0:
-                                log("captcha", "Turnstile rejected the attempt; retrying once", "warn")
-                                break
-                            log("error", blocker, "error")
-                            return {"error": blocker}
-
-                    await asyncio.sleep(0.5)
-
-                if login_done:
-                    break
-
-            if not login_done:
-                error = (
-                    "Postman login did not reach a workspace within 60 seconds."
-                    if headless
-                    else "Manual Postman login timed out after 5 minutes."
-                )
-                log("error", error, "error")
-                return {"error": error}
-
-            log("redirect", f"Postman workspace detected: {page.url}")
-            log("redirect", f"Subdomain: {workspace_subdomain}")
-
-            log("cookie", "Extracting postman.sid...")
-            cookies = await context.cookies()
-            postman_sid = None
-            for cookie in cookies:
-                if cookie.get("name") == "postman.sid":
-                    domain = cookie.get("domain", "")
-                    if ".postman.co" in domain or domain == "postman.co":
-                        postman_sid = cookie.get("value")
-                        break
-            if not postman_sid:
-                for cookie in cookies:
-                    if cookie.get("name") == "postman.sid" and cookie.get("value"):
-                        postman_sid = cookie.get("value")
-                        break
-
-            if not postman_sid:
-                log("cookie", "FAILED: postman.sid not found", "error")
-                return {"error": "postman.sid cookie not found"}
-
-            log("cookie", "postman.sid extracted successfully")
-
-            log("token", "Fetching handshake token...")
-            user_id = ""
-            workspace_id = ""
+        last_detail = "Login failed"
+        for attempt in range(2):
+            browser = None
             try:
-                handshake = await page.evaluate(
-                    f"""async () => {{
-                        const resp = await fetch('{HANDSHAKE_TOKEN_URL}', {{credentials: 'include'}});
-                        return await resp.json();
-                    }}"""
+                # A fresh browser per attempt gets a fresh fingerprint and a
+                # clean cookie jar, which Cloudflare weighs heavily.
+                browser = await _launch_browser(p, headless, proxy)
+            except Exception as exc:
+                log("error", f"Browser launch failed: {exc}", "error")
+                return {"error": f"Login failed: {exc}"}
+
+            try:
+                outcome, detail, context, page = await _run_login_attempt(
+                    p, browser, email, password, headless, attempt
                 )
-                if handshake and handshake.get("token"):
-                    jwt_payload = decode_jwt_payload(handshake["token"])
-                    user_id = str(jwt_payload.get("userId", ""))
-                    workspace_id = str(jwt_payload.get("teamId", ""))
-                    log("token", f"userId={user_id}, teamId={workspace_id}")
-            except Exception as e:
-                log("token", f"Handshake failed: {e}", "warn")
+            except Exception as exc:
+                log("error", f"Unexpected error: {exc}", "error")
+                await browser.close()
+                return {"error": f"Login failed: {exc}"}
 
-            if not user_id or not workspace_id:
-                log("token", "Fallback to god.postman.co...")
+            if outcome == "ok":
                 try:
-                    user_info = await page.evaluate(
-                        """async () => {
-                            const resp = await fetch('https://god.postman.co/api/users/me', {credentials: 'include'});
-                            return await resp.json();
-                        }"""
-                    )
-                    if user_info:
-                        user_id = str(user_info.get("id", user_id))
-                        orgs = user_info.get("user_organizations", {}).get("organizations", [])
-                        if orgs:
-                            workspace_id = str(orgs[0].get("id", workspace_id))
-                        log("token", f"Fallback: userId={user_id}, workspace_id={workspace_id}")
-                except Exception as e:
-                    log("token", f"Fallback failed: {e}", "warn")
-
-            if not user_id:
-                user_id = "unknown"
-            if not workspace_id:
-                workspace_id = "unknown"
-
-            log("done", f"user_id={user_id} workspace_id={workspace_id} subdomain={workspace_subdomain}")
-
-            return {
-                "postman_sid": postman_sid,
-                "user_id": user_id,
-                "workspace_id": workspace_id,
-                "workspace_subdomain": workspace_subdomain,
-            }
-
-        except Exception as exc:
-            log("error", f"Unexpected error: {exc}", "error")
-            return {"error": f"Login failed: {exc}"}
-        finally:
-            if browser:
-                try:
+                    return await _extract_session(context, page, detail)
+                finally:
                     await browser.close()
-                except Exception:
-                    pass
+
+            await browser.close()
+            last_detail = detail
+            if outcome == "error":
+                return {"error": detail}
+
+        return {"error": last_detail}
 
 def main():
     parser = argparse.ArgumentParser(description="Postman login via Playwright")
