@@ -7,7 +7,9 @@ import { eq } from "drizzle-orm";
 import { decodeAccountTokens, encodeAccountTokens, normalizeTokens } from "./tokens";
 
 const LOGIN_PROCESS_TIMEOUT_MS = {
-  headless: 240_000,
+  // Two script attempts with challenge waits can legitimately take a few
+  // minutes; kill the process only when it truly hangs.
+  headless: 300_000,
   headed: 330_000,
 } as const;
 

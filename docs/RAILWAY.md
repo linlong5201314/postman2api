@@ -72,6 +72,8 @@ GET https://你的域名/health
 
 Camoufox 在构建时被下载到 `/home/bun/.cache/camoufox`（由镜像 `ENV HOME=/home/bun` 与 `XDG_CACHE_HOME=/home/bun/.cache` 固定，入口脚本也会显式导出）。若这两个变量丢失，登录脚本会静默回退到普通 Chromium，Cloudflare 随即触发 Turnstile，登录报 `Postman requires CAPTCHA/Turnstile verification`。收到该报错时先确认部署日志里出现 `Launched Camoufox` 而不是 `falling back to Chromium`。
 
+Railway 的出口 IP 属于数据中心，即使浏览器指纹正常，Cloudflare 也可能拒绝发放 Turnstile 令牌。此时在 Dashboard 的 **Browser login** 表单里填写可选的 **Proxy**（例如住宅代理 `http://user:pass@host:port`），登录浏览器会通过该代理访问 Postman，大幅提高通过率。登录脚本现在会：等待隐形 Turnstile 在提交前发出令牌、出现可见复选框时自动点击、每次重试都使用全新的浏览器指纹，并在 30 秒宽限期内容忍会自动消失的挑战页。
+
 ## 5. 代理一次性导入
 
 推荐将代理放在 Railway 的私密多行变量 `PROXY_BOOTSTRAP` 中，每行一个。应用每次启动都会解析，但按标准化 URL 去重，因此可安全重部署。例如：
