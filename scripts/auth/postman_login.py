@@ -14,6 +14,7 @@ import json
 import re
 import sys
 import time
+from typing import Any
 
 # Optional: Add project root to sys.path if needed
 import os
@@ -24,6 +25,45 @@ HANDSHAKE_TOKEN_URL = "https://ra.gw.postman.co/v1/handshake/token?agent=cloud"
 HEADLESS_LOGIN_TIMEOUT_SECONDS = 60
 MANUAL_LOGIN_TIMEOUT_SECONDS = 300
 CAPTCHA_GRACE_SECONDS = 10
+CHALLENGE_WAIT_SECONDS = 45
+RETRY_CAPTCHA_MARKER = "__retry_captcha__"
+
+STEALTH_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
+
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+window.chrome = { runtime: {} };
+Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+"""
+
+USERNAME_SELECTORS = (
+    "#username",
+    'input[name="username"]',
+    'input[autocomplete="username"]',
+    'input[type="email"]',
+    'input[name="email"]',
+    'input[placeholder*="email" i]',
+    'input[placeholder*="username" i]',
+)
+
+PASSWORD_SELECTORS = (
+    "#password",
+    'input[name="password"]',
+    'input[type="password"]',
+    'input[autocomplete="current-password"]',
+)
+
+SUBMIT_SELECTORS = (
+    "#sign-in-btn",
+    'button[type="submit"]',
+    'button:has-text("Continue")',
+    'button:has-text("Sign in")',
+    'button:has-text("Log in")',
+)
 
 def log(step: str, msg: str, level: str = "info"):
     entry = {"step": step, "msg": msg, "level": level, "ts": time.time()}
@@ -68,6 +108,39 @@ def read_login_input() -> tuple[str, str, bool]:
         os.getenv("POSTMAN_LOGIN_HEADLESS", "").lower() == "true",
     )
 
+async def _is_challenge_page(page) -> bool:
+    try:
+        title = (await page.title()).lower()
+    except Exception:
+        return False
+    if "moment" in title or "attention" in title or "challenge" in title:
+        return True
+    try:
+        body = (await page.locator("body").inner_text(timeout=1000)).lower()
+    except Exception:
+        body = ""
+    return any(marker in body for marker in (
+        "verify you are human", "security verification", "正在验证", "安全验证", "挑战",
+    ))
+
+async def _wait_for_signin_form(page) -> bool:
+    deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if await _is_on_postman_workspace(page):
+            return True
+        for selector in USERNAME_SELECTORS:
+            try:
+                if await page.locator(selector).first.is_visible(timeout=250):
+                    log("challenge", "Sign-in form visible", "info")
+                    return True
+            except Exception:
+                continue
+        if not await _is_challenge_page(page):
+            # Page settled on something unexpected; let the credential flow report it.
+            return True
+        await asyncio.sleep(1)
+    return False
+
 async def _is_on_postman_workspace(page) -> bool:
     try:
         url = page.url
@@ -106,12 +179,7 @@ async def _click_email_login(page) -> bool:
     return False
 
 async def _submit_login_step(page) -> bool:
-    for selector in (
-        'button[type="submit"]',
-        'button:has-text("Continue")',
-        'button:has-text("Sign in")',
-        'button:has-text("Log in")',
-    ):
+    for selector in SUBMIT_SELECTORS:
         locator = page.locator(selector).first
         try:
             await locator.wait_for(state="visible", timeout=2000)
@@ -125,41 +193,19 @@ async def _fill_credentials(page, email: str, password: str) -> str | None:
     if not email or not password:
         return None
 
-    email_input = await _visible_locator(page, [
-        'input[type="email"]',
-        'input[name="email"]',
-        'input[name="username"]',
-        'input[autocomplete="username"]',
-        'input[placeholder*="email" i]',
-        'input[placeholder*="username" i]',
-    ], timeout=4000)
-    if email_input is None:
+    username_input = await _visible_locator(page, list(USERNAME_SELECTORS), timeout=4000)
+    if username_input is None:
         await _click_email_login(page)
-        email_input = await _visible_locator(page, [
-            'input[type="email"]',
-            'input[name="email"]',
-            'input[name="username"]',
-            'input[autocomplete="username"]',
-            'input[placeholder*="email" i]',
-            'input[placeholder*="username" i]',
-        ], timeout=4000)
-    if email_input is None:
-        return "Email input was not found; the provider may require manual or OAuth login"
+        username_input = await _visible_locator(page, list(USERNAME_SELECTORS), timeout=4000)
+    if username_input is None:
+        return "Username/email input was not found; the provider may require manual or OAuth login"
 
-    await email_input.fill(email)
-    password_input = await _visible_locator(page, [
-        'input[type="password"]',
-        'input[name="password"]',
-        'input[autocomplete="current-password"]',
-    ], timeout=1500)
+    await username_input.fill(email)
+    password_input = await _visible_locator(page, list(PASSWORD_SELECTORS), timeout=1500)
     if password_input is None:
         if not await _submit_login_step(page):
-            return "Could not advance from the email step"
-        password_input = await _visible_locator(page, [
-            'input[type="password"]',
-            'input[name="password"]',
-            'input[autocomplete="current-password"]',
-        ], timeout=10000)
+            return "Could not advance from the username step"
+        password_input = await _visible_locator(page, list(PASSWORD_SELECTORS), timeout=10000)
     if password_input is None:
         return "Password input was not found; the provider may require OAuth, MFA, or CAPTCHA"
 
@@ -196,6 +242,20 @@ async def _headless_login_blocker(page, submitted_at: float) -> str | None:
         return "Invalid Postman email/username or password."
 
     page_text = (await page.locator("body").inner_text(timeout=1000)).lower()
+
+    reset_markers = ("reset your password", "sent you an email to reset", "password reset")
+    if any(marker in page_text for marker in reset_markers):
+        return (
+            "Postman rejected the password and sent a reset email. Update the password "
+            "from the email, then add the account again."
+        )
+
+    captcha_fail = any(marker in page_text for marker in (
+        "unable to verify the captcha", "verify the captcha",
+    ))
+    if captcha_fail:
+        return RETRY_CAPTCHA_MARKER
+
     mfa_url = any(marker in current_url for marker in ("mfa", "two-factor", "two_factor", "otp"))
     mfa_text = any(marker in page_text for marker in (
         "verification code", "authenticator", "two-factor", "two factor", "two-step", "multi-factor",
@@ -229,7 +289,7 @@ async def _headless_login_blocker(page, submitted_at: float) -> str | None:
         "verify you are human", "captcha", "security check",
     ))
     turnstile_empty = False
-    if time.monotonic() - submitted_at >= CAPTCHA_GRACE_SECONDS:
+    if "identity.getpostman.com" in current_url and time.monotonic() - submitted_at >= CAPTCHA_GRACE_SECONDS:
         try:
             turnstile = page.locator('input[name="cf-turnstile-response"]').first
             if await turnstile.count() > 0:
@@ -244,6 +304,48 @@ async def _headless_login_blocker(page, submitted_at: float) -> str | None:
 
     return None
 
+async def _launch_browser(p, headless: bool):
+    try:
+        return await _launch_camoufox(p, headless)
+    except Exception as exc:
+        log("browser", f"Camoufox unavailable ({exc}); falling back to Chromium", "warn")
+        return await _launch_chromium(p, headless)
+
+async def _launch_camoufox(p, headless: bool):
+    from camoufox.addons import DefaultAddons
+    from camoufox.async_api import AsyncNewBrowser
+
+    kwargs: dict[str, Any] = {
+        "humanize": True,
+        "os": "windows",
+        "block_webrtc": True,
+        "addons": [],
+        "exclude_addons": [DefaultAddons.UBO],
+    }
+    if headless:
+        # Virtual display (Xvfb) works on Linux; plain headless elsewhere.
+        kwargs["headless"] = "virtual" if sys.platform != "win32" else True
+    browser = await AsyncNewBrowser(p, **kwargs)
+    log("browser", "Launched Camoufox (anti-detection Firefox)")
+    return browser
+
+async def _launch_chromium(p, headless: bool):
+    launch_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--no-default-browser-check",
+        "--no-first-run",
+        "--no-sandbox",
+    ]
+    if not headless:
+        launch_args.append("--start-maximized")
+    try:
+        browser = await p.chromium.launch(headless=headless, channel="chromium", args=launch_args)
+    except Exception:
+        log("browser", "Full Chromium unavailable; falling back to bundled build", "warn")
+        browser = await p.chromium.launch(headless=headless, args=launch_args)
+    log("browser", "Launched Chromium")
+    return browser
+
 async def login_postman(email: str, password: str, headless: bool) -> dict:
     from playwright.async_api import async_playwright
 
@@ -255,57 +357,82 @@ async def login_postman(email: str, password: str, headless: bool) -> dict:
     async with async_playwright() as p:
         browser = None
         try:
-            log("browser", "Launching Chromium...")
-            browser = await p.chromium.launch(
-                headless=headless,
-                args=[] if headless else ["--start-maximized"]
+            browser = await _launch_browser(p, headless)
+            is_camoufox = browser.browser_type.name == "firefox"
+
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                **({} if is_camoufox else {"user_agent": STEALTH_UA}),
             )
-            context = await browser.new_context()
             page = await context.new_page()
 
-            # Evade basic bot checks (optional but helpful)
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            # Evade basic bot checks for Chromium; Camoufox injects its own fingerprint.
+            if not is_camoufox:
+                await page.add_init_script(STEALTH_INIT_SCRIPT)
 
-            log("navigate", f"Opening {POSTMAN_LOGIN_URL}...")
-            await page.goto(POSTMAN_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
-
-            credential_error = await _fill_credentials(page, email, password)
-            if credential_error:
-                if headless:
-                    log("error", credential_error, "error")
-                    return {"error": credential_error}
-                log("credentials", credential_error, "warn")
-                log("wait", "Waiting for you to complete login manually...")
-            elif not email or not password:
-                log("wait", "Waiting for you to log in manually...")
-            
-            # Poll until the provider reaches a workspace or exposes a terminal login state.
+            # Cloudflare challenge + Turnstile can be flaky. Retry the whole
+            # navigation/credential flow once before giving up.
             login_done = False
             workspace_subdomain = "go"
-            submitted_at = time.monotonic()
-            timeout_seconds = HEADLESS_LOGIN_TIMEOUT_SECONDS if headless else MANUAL_LOGIN_TIMEOUT_SECONDS
-            deadline = time.monotonic() + timeout_seconds
+            for attempt in range(2):
+                log("navigate", f"Opening {POSTMAN_LOGIN_URL} (attempt {attempt + 1})...")
+                await page.goto(POSTMAN_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
 
-            while time.monotonic() < deadline:
-                try:
-                    current_url = page.url
-                except Exception:
-                    return {"error": "Browser page lost or closed"}
-                
-                if await _is_on_postman_workspace(page):
-                    match = re.search(r'https://([a-z0-9-]+)\.postman\.co', current_url)
-                    if match:
-                        workspace_subdomain = match.group(1)
-                    login_done = True
+                # Cloudflare may present a managed challenge before the sign-in form.
+                if not await _wait_for_signin_form(page):
+                    if attempt == 0:
+                        log("challenge", "Cloudflare challenge did not resolve; retrying", "warn")
+                        continue
+                    return {
+                        "error": (
+                            "Postman is showing a Cloudflare challenge that did not resolve. "
+                            "Try again later or import tokens manually."
+                        )
+                    }
+
+                credential_error = await _fill_credentials(page, email, password)
+                if credential_error:
+                    if headless:
+                        log("error", credential_error, "error")
+                        return {"error": credential_error}
+                    log("credentials", credential_error, "warn")
+                    log("wait", "Waiting for you to complete login manually...")
+                elif not email or not password:
+                    log("wait", "Waiting for you to log in manually...")
+
+                # Poll until the provider reaches a workspace or exposes a terminal login state.
+                submitted_at = time.monotonic()
+                timeout_seconds = HEADLESS_LOGIN_TIMEOUT_SECONDS if headless else MANUAL_LOGIN_TIMEOUT_SECONDS
+                deadline = time.monotonic() + timeout_seconds
+
+                while time.monotonic() < deadline:
+                    try:
+                        current_url = page.url
+                    except Exception:
+                        return {"error": "Browser page lost or closed"}
+
+                    if await _is_on_postman_workspace(page):
+                        match = re.search(r'https://([a-z0-9-]+)\.postman\.co', current_url)
+                        if match:
+                            workspace_subdomain = match.group(1)
+                        login_done = True
+                        break
+
+                    if headless and email and password:
+                        blocker = await _headless_login_blocker(page, submitted_at)
+                        if blocker:
+                            if blocker == RETRY_CAPTCHA_MARKER and attempt == 0:
+                                log("captcha", "Turnstile rejected the attempt; retrying once", "warn")
+                                break
+                            log("error", blocker, "error")
+                            return {"error": blocker}
+
+                    await asyncio.sleep(0.5)
+
+                if login_done:
                     break
-
-                if headless and email and password:
-                    blocker = await _headless_login_blocker(page, submitted_at)
-                    if blocker:
-                        log("error", blocker, "error")
-                        return {"error": blocker}
-
-                await asyncio.sleep(0.5)
 
             if not login_done:
                 error = (

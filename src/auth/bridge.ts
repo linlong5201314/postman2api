@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 import { decodeAccountTokens, encodeAccountTokens, normalizeTokens } from "./tokens";
 
 const LOGIN_PROCESS_TIMEOUT_MS = {
-  headless: 90_000,
+  headless: 150_000,
   headed: 330_000,
 } as const;
 

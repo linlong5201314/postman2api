@@ -30,11 +30,13 @@ describe("deployment contract", () => {
     expect(await read("scripts/docker-entrypoint.sh")).toContain("exec su -s /bin/sh bun");
   });
 
-  test("runtime image includes the Playwright Chromium browser", async () => {
+  test("runtime image includes the Playwright Chromium and Camoufox browsers", async () => {
     const dockerfile = await read("Dockerfile");
 
     expect(dockerfile).toContain("PLAYWRIGHT_BROWSERS_PATH=/ms-playwright");
     expect(dockerfile).toContain("python -m playwright install --with-deps chromium");
+    expect(dockerfile).toContain("python -m camoufox fetch");
+    expect(dockerfile).toContain("xvfb");
     expect(dockerfile).toContain("chown -R bun:bun /ms-playwright");
   });
 
@@ -44,7 +46,7 @@ describe("deployment contract", () => {
 
     expect(script).toContain("input[type=\"email\"]");
     expect(script).toContain("input[type=\"password\"]");
-    expect(script).toContain("await email_input.fill(email)");
+    expect(script).toContain("await username_input.fill(email)");
     expect(script).toContain("await password_input.fill(password)");
     expect(script).toContain("raw = sys.stdin.read()");
     expect(script).toContain("sys.stdin.isatty()");
@@ -62,6 +64,8 @@ describe("deployment contract", () => {
     expect(script).toContain("Postman requires multi-factor authentication");
     expect(script).toContain("Postman requires CAPTCHA/Turnstile verification");
     expect(script).toContain("Postman redirected to SSO/OAuth");
+    expect(script).toContain("Cloudflare challenge that did not resolve");
+    expect(script).toContain("reset email");
     expect(script).toContain("time.monotonic()");
     expect(bridge).toContain("LOGIN_PROCESS_TIMEOUT_MS");
     expect(bridge).toContain("proc.kill()");

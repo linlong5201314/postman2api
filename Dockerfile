@@ -34,6 +34,13 @@ COPY --from=dashboard-build /app/dashboard/dist ./dashboard/dist
 RUN python3 -m venv scripts/auth/.venv \
     && scripts/auth/.venv/bin/pip install --no-cache-dir -r scripts/auth/requirements.txt \
     && scripts/auth/.venv/bin/python -m playwright install --with-deps chromium \
+    && scripts/auth/.venv/bin/python -m playwright install-deps firefox \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends xvfb fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /home/bun \
+    && HOME=/home/bun scripts/auth/.venv/bin/python -m camoufox fetch \
+    && chown -R bun:bun /home/bun \
     && mkdir -p /app/data \
     && chown -R bun:bun /app \
     && chown -R bun:bun /ms-playwright

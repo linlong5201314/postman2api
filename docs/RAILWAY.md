@@ -68,7 +68,7 @@ GET https://你的域名/health
 
 打开域名后输入 `ADMIN_KEY` 进入 Dashboard。调用 `/v1/chat/completions` 使用 `Authorization: Bearer <API_KEY>`；Anthropic 客户端也可使用 `x-api-key: <API_KEY>`。
 
-若要在 Railway 尝试邮箱/密码登录，将 `ENABLE_BROWSER_LOGIN=true` 后重新部署。镜像已包含 Playwright Chromium；登录凭据只通过子进程环境传递，密码不会出现在进程命令行中。Postman 若要求 MFA、验证码、SSO 或第三方 OAuth，Railway 没有可操作的桌面界面，必须改用 Dashboard 的 **Manual token** 导入。
+若要在 Railway 尝试邮箱/密码登录，将 `ENABLE_BROWSER_LOGIN=true` 后重新部署。镜像已包含 Playwright Chromium 与 Camoufox（反检测 Firefox，用于通过 Cloudflare 挑战）；登录凭据只通过子进程环境传递，密码不会出现在进程命令行中。Postman 若要求 MFA、验证码、SSO 或第三方 OAuth，Railway 没有可操作的桌面界面，必须改用 Dashboard 的 **Manual token** 导入。
 
 ## 5. 代理一次性导入
 
