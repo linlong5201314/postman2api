@@ -30,6 +30,21 @@ describe("deployment contract", () => {
     expect(await read("scripts/docker-entrypoint.sh")).toContain("exec su -s /bin/sh bun");
   });
 
+  test("bun user resolves the Camoufox cache directory at runtime", async () => {
+    const dockerfile = await read("Dockerfile");
+    const entrypoint = await read("scripts/docker-entrypoint.sh");
+    const bridge = await read("src/auth/bridge.ts");
+
+    // Camoufox is fetched at build time into /home/bun/.cache/camoufox and
+    // must be resolvable by the bun user at runtime, otherwise the login
+    // script falls back to detectable Chromium.
+    expect(dockerfile).toContain("HOME=/home/bun");
+    expect(dockerfile).toContain("XDG_CACHE_HOME=/home/bun/.cache");
+    expect(entrypoint).toContain("export HOME=/home/bun");
+    expect(entrypoint).toContain("export XDG_CACHE_HOME=/home/bun/.cache");
+    expect(bridge).toContain("XDG_CACHE_HOME: \"/home/bun/.cache\"");
+  });
+
   test("runtime image includes the Playwright Chromium and Camoufox browsers", async () => {
     const dockerfile = await read("Dockerfile");
 

@@ -7,9 +7,25 @@ import { eq } from "drizzle-orm";
 import { decodeAccountTokens, encodeAccountTokens, normalizeTokens } from "./tokens";
 
 const LOGIN_PROCESS_TIMEOUT_MS = {
-  headless: 150_000,
+  headless: 240_000,
   headed: 330_000,
 } as const;
+
+// The login script locates the Camoufox anti-detection browser under
+// $XDG_CACHE_HOME/camoufox (or $HOME/.cache/camoufox). Camoufox is fetched
+// at image build time into /home/bun/.cache/camoufox, so when the server is
+// started outside the Docker entrypoint (e.g. directly as root) the spawned
+// Python process must still resolve that directory, otherwise it silently
+// falls back to plain Chromium and Cloudflare blocks the login.
+function browserCacheEnv(): Record<string, string> {
+  if (process.platform !== "linux") return {};
+  const home = process.env.HOME;
+  if (home && home !== "/root" && process.env.XDG_CACHE_HOME) return {};
+  return {
+    HOME: home && home !== "/root" ? home : "/home/bun",
+    XDG_CACHE_HOME: "/home/bun/.cache",
+  };
+}
 
 export interface PostmanLoginResult {
   postman_sid: string;
@@ -51,6 +67,7 @@ export async function loginPostmanAccount(
       cwd: config.authScriptCwd,
       env: {
         ...process.env,
+        ...browserCacheEnv(),
         POSTMAN_LOGIN_HEADLESS: String(headless),
         CAMOUFOX_HEADLESS: headless ? "true" : "false",
       },

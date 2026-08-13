@@ -49,6 +49,13 @@ USER root
 COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
 RUN chmod 0755 ./scripts/docker-entrypoint.sh
 
+# Camoufox (anti-detection Firefox) is fetched at build time into
+# /home/bun/.cache/camoufox. Runtime processes run as the bun user and must
+# resolve the same cache directory, otherwise the login script falls back
+# to plain Chromium and Cloudflare blocks the login.
+ENV HOME=/home/bun \
+    XDG_CACHE_HOME=/home/bun/.cache
+
 EXPOSE 1930
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:'+process.env.PORT+'/health');if(!r.ok)process.exit(1)"]

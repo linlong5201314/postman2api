@@ -24,7 +24,10 @@ POSTMAN_LOGIN_URL = "https://identity.getpostman.com/login"
 HANDSHAKE_TOKEN_URL = "https://ra.gw.postman.co/v1/handshake/token?agent=cloud"
 HEADLESS_LOGIN_TIMEOUT_SECONDS = 60
 MANUAL_LOGIN_TIMEOUT_SECONDS = 300
-CAPTCHA_GRACE_SECONDS = 10
+# Cloudflare Turnstile non-interactive challenges can take a while to issue
+# a token, especially from datacenter IPs. Fail only if it is still empty
+# after this grace period following credential submission.
+CAPTCHA_GRACE_SECONDS = 30
 CHALLENGE_WAIT_SECONDS = 45
 RETRY_CAPTCHA_MARKER = "__retry_captcha__"
 

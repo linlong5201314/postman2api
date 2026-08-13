@@ -70,6 +70,8 @@ GET https://你的域名/health
 
 若要在 Railway 尝试邮箱/密码登录，将 `ENABLE_BROWSER_LOGIN=true` 后重新部署。镜像已包含 Playwright Chromium 与 Camoufox（反检测 Firefox，用于通过 Cloudflare 挑战）；登录凭据只通过子进程环境传递，密码不会出现在进程命令行中。Postman 若要求 MFA、验证码、SSO 或第三方 OAuth，Railway 没有可操作的桌面界面，必须改用 Dashboard 的 **Manual token** 导入。
 
+Camoufox 在构建时被下载到 `/home/bun/.cache/camoufox`（由镜像 `ENV HOME=/home/bun` 与 `XDG_CACHE_HOME=/home/bun/.cache` 固定，入口脚本也会显式导出）。若这两个变量丢失，登录脚本会静默回退到普通 Chromium，Cloudflare 随即触发 Turnstile，登录报 `Postman requires CAPTCHA/Turnstile verification`。收到该报错时先确认部署日志里出现 `Launched Camoufox` 而不是 `falling back to Chromium`。
+
 ## 5. 代理一次性导入
 
 推荐将代理放在 Railway 的私密多行变量 `PROXY_BOOTSTRAP` 中，每行一个。应用每次启动都会解析，但按标准化 URL 去重，因此可安全重部署。例如：
