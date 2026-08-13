@@ -208,14 +208,16 @@ async def _click_email_login(page) -> bool:
     return False
 
 async def _submit_login_step(page) -> bool:
-    for selector in SUBMIT_SELECTORS:
-        locator = page.locator(selector).first
-        try:
-            await locator.wait_for(state="visible", timeout=2000)
-            await locator.click()
-            return True
-        except Exception:
-            continue
+    for _ in range(2):
+        for selector in SUBMIT_SELECTORS:
+            locator = page.locator(selector).first
+            try:
+                await locator.wait_for(state="visible", timeout=2000)
+                await locator.click()
+                return True
+            except Exception:
+                continue
+        await asyncio.sleep(1)
     return False
 
 async def _fill_credentials(page, email: str, password: str) -> str | None:
@@ -229,6 +231,14 @@ async def _fill_credentials(page, email: str, password: str) -> str | None:
     if username_input is None:
         return "Username/email input was not found; the provider may require manual or OAuth login"
 
+    # The invisible Turnstile widget is present from page load. Wait for its
+    # token BEFORE filling the form so the final submit happens immediately
+    # after typing instead of after a long pause (Postman rejects submissions
+    # whose cf-turnstile-response is empty).
+    token_info = await _wait_for_turnstile_token(page)
+    if token_info:
+        log("captcha", token_info, "warn")
+
     await username_input.fill(email)
     password_input = await _visible_locator(page, list(PASSWORD_SELECTORS), timeout=1500)
     if password_input is None:
@@ -239,12 +249,12 @@ async def _fill_credentials(page, email: str, password: str) -> str | None:
         return "Password input was not found; the provider may require OAuth, MFA, or CAPTCHA"
 
     await password_input.fill(password)
-    # Postman rejects the submit while the Turnstile token is still empty.
-    token_info = await _wait_for_turnstile_token(page)
-    if token_info:
-        log("captcha", token_info, "warn")
     if not await _submit_login_step(page):
-        return "Could not submit the password step"
+        # Some flows submit on Enter; try it before giving up.
+        try:
+            await password_input.press("Enter")
+        except Exception:
+            return "Could not submit the password step"
     log("credentials", "Credentials submitted; waiting for provider redirect")
     return None
 
