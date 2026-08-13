@@ -4,6 +4,7 @@ import { accounts, requestLogs } from "../db/schema";
 import { eq } from "drizzle-orm";
 import { encrypt } from "../utils/crypto";
 import { decodeAccountTokens, encodeAccountTokens } from "../auth/tokens";
+import { completeTokensViaHandshake, type ManualTokensInput } from "../auth/handshake";
 import { normalizeWorkspaceSubdomain } from "../utils/workspace";
 import { loginPostmanAccount } from "../auth/bridge";
 import { warmupAccount } from "../auth/warmup";
@@ -60,11 +61,18 @@ accountsRouter.post("/login", async (c) => {
 accountsRouter.post("/", async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
     email?: string;
-    tokens?: { postman_sid: string; user_id: string; workspace_id: string; workspace_subdomain: string };
+    tokens?: ManualTokensInput;
   };
 
-  if (!body.email || !body.tokens?.postman_sid || !body.tokens.user_id || !body.tokens.workspace_id || !normalizeWorkspaceSubdomain(body.tokens.workspace_subdomain)) {
-    return c.json({ error: "Email and tokens (postman_sid, user_id, workspace_id, workspace_subdomain) required" }, 400);
+  if (!body.email || !body.tokens?.postman_sid || !normalizeWorkspaceSubdomain(body.tokens.workspace_subdomain)) {
+    return c.json({
+      error: "Email and tokens (postman_sid, workspace_subdomain) required; user_id/workspace_id are filled in automatically",
+    }, 400);
+  }
+
+  const tokens = await completeTokensViaHandshake(body.tokens);
+  if (!tokens) {
+    return c.json({ error: "Invalid or expired postman.sid; log in again and copy a fresh session" }, 400);
   }
 
   const [existing] = await db.select().from(accounts).where(eq(accounts.email, body.email)).limit(1);
@@ -72,7 +80,7 @@ accountsRouter.post("/", async (c) => {
   if (existing) {
     const [updated] = await db.update(accounts)
       .set({
-          tokens: encodeAccountTokens(body.tokens),
+          tokens: encodeAccountTokens(tokens),
         status: "active",
         lastLoginAt: new Date(),
         updatedAt: new Date(),
@@ -87,7 +95,7 @@ accountsRouter.post("/", async (c) => {
   const [created] = await db.insert(accounts).values({
     email: body.email,
     password: encrypt("manual"),
-    tokens: encodeAccountTokens(body.tokens),
+    tokens: encodeAccountTokens(tokens),
     status: "active",
     lastLoginAt: new Date(),
     createdAt: new Date(),

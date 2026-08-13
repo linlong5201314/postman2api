@@ -341,7 +341,7 @@ function AddAccountModal({
       {mode === "login" ? (
         <label className="settings-row"><span>Password</span><input className="input" onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></label>
       ) : (
-        <label className="settings-row"><span>Tokens JSON</span><textarea className="input" onChange={(event) => setTokens(event.target.value)} placeholder='{"postman_sid":"..."}' value={tokens} /></label>
+        <label className="settings-row"><span>Tokens JSON</span><textarea className="input" onChange={(event) => setTokens(event.target.value)} placeholder='{"postman_sid":"6b0c...","workspace_subdomain":"linlongli-2423114"}' value={tokens} /></label>
       )}
       <div className="dialog-actions"><button className="dialog-btn" onClick={onClose} type="button">Cancel</button><button className="dialog-btn dialog-btn-primary" disabled={saving} onClick={() => void submit()} type="button">{saving ? "Saving..." : "Add"}</button></div>
     </Modal>
