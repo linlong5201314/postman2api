@@ -6,6 +6,11 @@ import { broadcast } from "../ws/index";
 import { eq } from "drizzle-orm";
 import { decodeAccountTokens, encodeAccountTokens, normalizeTokens } from "./tokens";
 
+const LOGIN_PROCESS_TIMEOUT_MS = {
+  headless: 90_000,
+  headed: 330_000,
+} as const;
+
 export interface PostmanLoginResult {
   postman_sid: string;
   user_id: string;
@@ -27,8 +32,13 @@ export async function loginPostmanAccount(
   headless: boolean,
   onLog?: (log: LoginLogEntry) => void,
 ): Promise<{ success: boolean; accountId?: number; error?: string }> {
+  const fail = (error: string) => {
+    broadcast({ type: "login_done", data: { email, success: false, error } });
+    return { success: false as const, error };
+  };
+
   if (!config.enableBrowserLogin) {
-    return { success: false, error: "Browser login is disabled. Add account tokens manually." };
+    return fail("Browser login is disabled. Add account tokens manually.");
   }
   const scriptPath = config.authScriptCwd + "/postman_login.py";
 
@@ -36,18 +46,26 @@ export async function loginPostmanAccount(
     const proc = Bun.spawn({
       cmd: [
         config.pythonPath, scriptPath,
-        "--email", email,
-        "--password", password,
         ...(headless ? ["--headless"] : []),
       ],
       cwd: config.authScriptCwd,
       env: {
         ...process.env,
+        POSTMAN_LOGIN_HEADLESS: String(headless),
         CAMOUFOX_HEADLESS: headless ? "true" : "false",
       },
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     });
+
+    proc.stdin.write(JSON.stringify({ email, password, headless }));
+    proc.stdin.end();
+
+    const processTimeoutMs = headless
+      ? LOGIN_PROCESS_TIMEOUT_MS.headless
+      : LOGIN_PROCESS_TIMEOUT_MS.headed;
+    let processTimer: ReturnType<typeof setTimeout> | undefined;
 
     const stderrLines: string[] = [];
     const stderrReader = (async () => {
@@ -95,9 +113,35 @@ export async function loginPostmanAccount(
       }
     })();
 
-    const stdout = await new Response(proc.stdout).text();
-    await stderrReader;
-    const exitCode = await proc.exited;
+    const stdoutReader = new Response(proc.stdout).text();
+    const timeout = new Promise<never>((_, reject) => {
+      processTimer = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {
+          // The process may have exited between the timeout and the signal.
+        }
+        reject(new Error(`Login process timed out after ${Math.ceil(processTimeoutMs / 1000)} seconds`));
+      }, processTimeoutMs);
+    });
+
+    let stdout: string;
+    let exitCode: number;
+    try {
+      [stdout, , exitCode] = await Promise.race([
+        Promise.all([stdoutReader, stderrReader, proc.exited]),
+        timeout,
+      ]);
+    } finally {
+      if (processTimer) clearTimeout(processTimer);
+      if (proc.exitCode === null) {
+        try {
+          proc.kill();
+        } catch {
+          // Best-effort cleanup; the process can exit while this runs.
+        }
+      }
+    }
 
     if (exitCode !== 0) {
       const lastErr = stderrLines.length > 0
@@ -111,17 +155,17 @@ export async function loginPostmanAccount(
         errorMsg = lastErr || errorMsg;
       }
       console.error("[auth:bridge] Python script error:", errorMsg);
-      return { success: false, error: errorMsg };
+      return fail(errorMsg);
     }
 
     const result: PostmanLoginResult = JSON.parse(stdout.trim());
 
     if (result.error) {
-      return { success: false, error: result.error };
+      return fail(result.error);
     }
 
     if (!result.postman_sid || !result.workspace_subdomain) {
-      return { success: false, error: "Incomplete tokens from login script" };
+      return fail("Incomplete tokens from login script");
     }
 
     const tokens = normalizeTokens({
@@ -130,7 +174,7 @@ export async function loginPostmanAccount(
       workspace_id: result.workspace_id,
       workspace_subdomain: result.workspace_subdomain,
     });
-    if (!tokens) return { success: false, error: "Invalid workspace or incomplete tokens from login script" };
+    if (!tokens) return fail("Invalid workspace or incomplete tokens from login script");
 
     const encryptedPassword = encrypt(password);
     const tokensJson = encodeAccountTokens(tokens);
@@ -173,8 +217,7 @@ export async function loginPostmanAccount(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[auth:bridge] Error:", msg);
-    broadcast({ type: "login_done", data: { email, success: false, error: msg } });
-    return { success: false, error: msg };
+    return fail(msg);
   }
 }
 

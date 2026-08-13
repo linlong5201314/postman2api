@@ -20,13 +20,52 @@ describe("deployment contract", () => {
     expect(railway.deploy.restartPolicyMaxRetries).toBeGreaterThanOrEqual(10);
   });
 
-  test("container is pinned, non-root, and exposes the persistent data path", async () => {
+  test("container is pinned, uses a restricted app user, and exposes the persistent data path", async () => {
     const dockerfile = await read("Dockerfile");
 
     expect(dockerfile).toMatch(/^FROM oven\/bun:1\.3\.\d+-slim/m);
     expect(dockerfile).toContain("DATABASE_PATH=/app/data/postman2api.db");
-    expect(dockerfile).toContain("USER bun");
-    expect(dockerfile).toContain('["bun", "src/index.ts"]');
+    expect(dockerfile).toContain("USER root");
+    expect(dockerfile).toContain("ENTRYPOINT [\"/app/scripts/docker-entrypoint.sh\"]");
+    expect(await read("scripts/docker-entrypoint.sh")).toContain("exec su -s /bin/sh bun");
+  });
+
+  test("runtime image includes the Playwright Chromium browser", async () => {
+    const dockerfile = await read("Dockerfile");
+
+    expect(dockerfile).toContain("PLAYWRIGHT_BROWSERS_PATH=/ms-playwright");
+    expect(dockerfile).toContain("python -m playwright install --with-deps chromium");
+    expect(dockerfile).toContain("chown -R bun:bun /ms-playwright");
+  });
+
+  test("browser login attempts supplied credentials without logging the password", async () => {
+    const script = await read("scripts/auth/postman_login.py");
+    const bridge = await read("src/auth/bridge.ts");
+
+    expect(script).toContain("input[type=\"email\"]");
+    expect(script).toContain("input[type=\"password\"]");
+    expect(script).toContain("await email_input.fill(email)");
+    expect(script).toContain("await password_input.fill(password)");
+    expect(script).toContain("raw = sys.stdin.read()");
+    expect(script).toContain("sys.stdin.isatty()");
+    expect(script).not.toContain("Password (ignored for manual login)");
+    expect(bridge).not.toContain('"--password", password');
+    expect(bridge).not.toContain("POSTMAN_LOGIN_PASSWORD: password");
+    expect(bridge).toContain('stdin: "pipe"');
+  });
+
+  test("headless browser login fails clearly and cannot retain a process indefinitely", async () => {
+    const script = await read("scripts/auth/postman_login.py");
+    const bridge = await read("src/auth/bridge.ts");
+
+    expect(script).toContain("Invalid Postman email/username or password.");
+    expect(script).toContain("Postman requires multi-factor authentication");
+    expect(script).toContain("Postman requires CAPTCHA/Turnstile verification");
+    expect(script).toContain("Postman redirected to SSO/OAuth");
+    expect(script).toContain("time.monotonic()");
+    expect(bridge).toContain("LOGIN_PROCESS_TIMEOUT_MS");
+    expect(bridge).toContain("proc.kill()");
+    expect(bridge).toContain("Login process timed out");
   });
 
   test("deployment templates never ship usable default secrets", async () => {

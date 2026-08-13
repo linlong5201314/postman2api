@@ -35,8 +35,8 @@ Railway Variables 中必须设置 `REQUIRE_PERSISTENT_STORAGE=true`。
 | `ENCRYPTION_KEY` | 64 位十六进制 | 是 | 加密账号 token 和代理凭据；丢失后无法解密 |
 | `DATABASE_PATH` | `/app/data/postman2api.db` | 是 | SQLite 位于 Volume 内 |
 | `REQUIRE_PERSISTENT_STORAGE` | `true` | 是 | 未正确挂载 Volume 时让 `/health` 返回 503，阻止错误切流 |
-| `ENABLE_BROWSER_LOGIN` | `false` | 推荐 | Railway 无交互式桌面；使用 Dashboard 手工导入账号 token |
-| `CAMOUFOX_HEADLESS` | `true` | 否 | 仅启用浏览器登录时使用 |
+| `ENABLE_BROWSER_LOGIN` | `false` 或 `true` | 推荐保留 `false` | 设为 `true` 后可尝试无头邮箱/密码登录；MFA、验证码、SSO、OAuth 仍需手工 Token |
+| `CAMOUFOX_HEADLESS` | `true` | 否 | 兼容旧配置；Dashboard 的 Railway 登录固定使用无头 Chromium |
 | `PROXY_BOOTSTRAP` | 私密多行代理文本 | 否 | 首次启动自动导入，重复部署会去重 |
 | `PROXY_BOOTSTRAP_FILE` | 留空 | 否 | 容器内文件路径；Railway 通常使用上一个变量 |
 | `PROXY_TEST_URL` | `https://api.ipify.org?format=json` | 否 | 代理连通性测试目标 |
@@ -67,6 +67,8 @@ GET https://你的域名/health
 `/livez` 只证明进程存活。`/health` 只有在迁移完成、数据库可写、生产配置有效且 Volume 正确挂载时才返回 200。若 `/health` 为 503，先查看 JSON 中的检查项，不要改成虚假的固定 200。
 
 打开域名后输入 `ADMIN_KEY` 进入 Dashboard。调用 `/v1/chat/completions` 使用 `Authorization: Bearer <API_KEY>`；Anthropic 客户端也可使用 `x-api-key: <API_KEY>`。
+
+若要在 Railway 尝试邮箱/密码登录，将 `ENABLE_BROWSER_LOGIN=true` 后重新部署。镜像已包含 Playwright Chromium；登录凭据只通过子进程环境传递，密码不会出现在进程命令行中。Postman 若要求 MFA、验证码、SSO 或第三方 OAuth，Railway 没有可操作的桌面界面，必须改用 Dashboard 的 **Manual token** 导入。
 
 ## 5. 代理一次性导入
 

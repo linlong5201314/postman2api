@@ -18,7 +18,7 @@ bun start
 
 The server runs migrations automatically. Open `http://localhost:1930`, then sign in with `ADMIN_KEY` from `.env`. Production startup rejects missing or weak secrets.
 
-For reliable account setup, use the Dashboard's manual token import. Browser login can be disabled with `ENABLE_BROWSER_LOGIN=false` and is disabled in the Railway image.
+For reliable account setup, use the Dashboard's manual token import. The Railway image includes headless Chromium for direct email/password login when `ENABLE_BROWSER_LOGIN=true`, but MFA, CAPTCHA, SSO, and OAuth accounts still require manual token import.
 
 ## Proxies
 

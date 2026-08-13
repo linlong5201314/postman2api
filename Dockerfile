@@ -15,6 +15,7 @@ ENV NODE_ENV=production \
     PORT=1930 \
     DATABASE_PATH=/app/data/postman2api.db \
     PYTHON_PATH=/app/scripts/auth/.venv/bin/python \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     ENABLE_BROWSER_LOGIN=false
 
 WORKDIR /app
@@ -32,8 +33,10 @@ COPY --from=dashboard-build /app/dashboard/dist ./dashboard/dist
 
 RUN python3 -m venv scripts/auth/.venv \
     && scripts/auth/.venv/bin/pip install --no-cache-dir -r scripts/auth/requirements.txt \
+    && scripts/auth/.venv/bin/python -m playwright install --with-deps chromium \
     && mkdir -p /app/data \
-    && chown -R bun:bun /app
+    && chown -R bun:bun /app \
+    && chown -R bun:bun /ms-playwright
 
 USER root
 COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
