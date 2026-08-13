@@ -89,6 +89,7 @@ describe("deployment contract", () => {
     expect(script).toContain("Invalid Postman email/username or password.");
     expect(script).toContain("Postman requires multi-factor authentication");
     expect(script).toContain("Postman requires CAPTCHA/Turnstile verification");
+    expect(script).toContain("Postman rejected the CAPTCHA/Turnstile verification");
     expect(script).toContain("Postman redirected to SSO/OAuth");
     expect(script).toContain("Cloudflare challenge that did not resolve");
     expect(script).toContain("reset email");

@@ -248,7 +248,23 @@ async def _fill_credentials(page, email: str, password: str) -> str | None:
     log("credentials", "Credentials submitted; waiting for provider redirect")
     return None
 
-async def _wait_for_turnstile_token(page, timeout: float = 12.0) -> str | None:
+async def _warmup_navigation(page) -> None:
+    """Visit Postman's public pages first so the login request looks like a
+    real browsing session instead of a direct hit on the login form."""
+    for url, seconds in (
+        ("https://www.postman.com/", 3.0),
+        ("https://www.postman.com/product/what-is-postman/", 2.0),
+    ):
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.mouse.wheel(0, 600)
+            await asyncio.sleep(seconds)
+            log("navigate", f"Warm-up visited {url}")
+        except Exception as e:
+            log("navigate", f"Warm-up visit failed for {url}: {e}", "warn")
+
+
+async def _wait_for_turnstile_token(page, timeout: float = 20.0) -> str | None:
     """Wait briefly for the invisible Turnstile widget to issue a token.
 
     Postman rejects submissions whose cf-turnstile-response is still empty,
@@ -471,6 +487,7 @@ async def _run_login_attempt(
     if not is_camoufox:
         await page.add_init_script(STEALTH_INIT_SCRIPT)
 
+    await _warmup_navigation(page)
     log("navigate", f"Opening {POSTMAN_LOGIN_URL} (attempt {attempt + 1})...")
     await page.goto(POSTMAN_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
 
@@ -528,9 +545,14 @@ async def _run_login_attempt(
 
             blocker = await _headless_login_blocker(page, submitted_at)
             if blocker:
-                if blocker == RETRY_CAPTCHA_MARKER and attempt == 0:
-                    log("captcha", "Turnstile rejected the attempt; retrying with a fresh browser", "warn")
-                    return "retry", "captcha", None, None
+                if blocker == RETRY_CAPTCHA_MARKER:
+                    if attempt == 0:
+                        log("captcha", "Turnstile rejected the attempt; retrying with a fresh browser", "warn")
+                        return "retry", "captcha", None, None
+                    return "error", (
+                        "Postman rejected the CAPTCHA/Turnstile verification. Use a "
+                        "residential proxy for the login browser or import tokens manually."
+                    ), None, None
                 log("error", blocker, "error")
                 return "error", blocker, None, None
 
