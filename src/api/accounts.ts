@@ -51,7 +51,7 @@ accountsRouter.post("/login", async (c) => {
 
   const result = await loginPostmanAccount(body.email, body.password, headless);
   if (!result.success) {
-    return c.json({ error: publicError(result.error, "Login failed") }, 400);
+    return c.json({ error: publicError(result.error, "Login failed"), logs: result.logs || [] }, 400);
   }
 
   return c.json({ success: true, accountId: result.accountId });

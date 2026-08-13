@@ -47,10 +47,16 @@ export async function loginPostmanAccount(
   password: string,
   headless: boolean,
   onLog?: (log: LoginLogEntry) => void,
-): Promise<{ success: boolean; accountId?: number; error?: string }> {
+): Promise<{ success: boolean; accountId?: number; error?: string; logs?: string[] }> {
+  let debugLines: string[] = [];
   const fail = (error: string) => {
     broadcast({ type: "login_done", data: { email, success: false, error } });
-    return { success: false as const, error };
+    console.error(`[auth:bridge] Login failed for ${email}: ${error}`);
+    const lastLines = debugLines.slice(-30);
+    if (lastLines.length > 0) {
+      console.error(`[auth:bridge] Login script log (last ${lastLines.length} lines):\n${lastLines.join("\n")}`);
+    }
+    return { success: false as const, error, logs: lastLines };
   };
 
   if (!config.enableBrowserLogin) {
